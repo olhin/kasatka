@@ -1,0 +1,385 @@
+.imgDron {
+    display: block;
+    position: relative;
+    top: -200px;
+    left: -10px;
+    margin: 20px auto;
+    max-width: 80%;
+    border-radius: 8px;
+    box-shadow: 0px 4px 10px rgba(0, 255, 0, 0.4);
+    width: 15%;
+    height: auto;
+    animation: droneFloat 3s ease-in-out infinite;
+}
+
+.radarContainer {
+    position: relative;
+    width: 76vmin;
+    height: 76vmin;
+    top: 1%;
+    left: 3.5%;
+}
+
+.radar {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    box-shadow: 0 0 40px rgba(0, 255, 0, 0.7),
+        0 0 80px rgba(0, 255, 0, 0.4),
+        0 0 120px rgba(0, 255, 0, 0.2);
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 50%,
+            rgba(0, 80, 0, 0.2) 0%,
+            rgba(0, 40, 0, 0.6) 70%,
+            rgba(0, 20, 0, 0.9) 100%);
+    transition: all 0.3s ease;
+}
+
+.radar.red {
+    box-shadow: 0 0 40px rgba(255, 0, 0, 0.6),
+        0 0 80px rgba(255, 0, 0, 0.4),
+        0 0 120px rgba(255, 0, 0, 0.2);
+    background: radial-gradient(circle at 50% 50%,
+            rgba(80, 0, 0, 0.2) 0%,
+            rgba(40, 0, 0, 0.4) 70%,
+            rgba(20, 0, 0, 0.7) 100%);
+}
+
+.radar::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    animation: radarWave 3s linear infinite;
+    background: radial-gradient(circle,
+            rgba(0, 255, 0, 0.7) 0%,
+            rgba(0, 255, 0, 0.5) 20%,
+            transparent 60%);
+    filter: brightness(1.1) contrast(1.3);
+}
+
+.radar.red::after {
+    background: radial-gradient(circle,
+            rgba(255, 0, 0, 0.6) 0%,
+            rgba(255, 0, 0, 0.4) 20%,
+            transparent 60%);
+}
+
+.radar.red .innerCircle,
+.radar.red .innerCircle2,
+.radar.red .innerCircle3 {
+    border-color: rgba(255, 0, 0, 0.6);
+    box-shadow: 0 0 25px rgba(255, 0, 0, 0.4);
+}
+
+.radar.red .degreeMarking {
+    background-color: rgba(255, 0, 0, 0.6);
+    box-shadow: 0 0 10px rgba(255, 0, 0, 0.4);
+}
+
+.radar.red .imgDron {
+    box-shadow: 0px 4px 10px rgba(255, 0, 0, 0.4);
+}
+
+.innerCircle,
+.innerCircle2,
+.innerCircle3 {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    border-radius: 50%;
+    border: 2px solid rgba(0, 255, 0, 0.7);
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 25px rgba(0, 255, 0, 0.3);
+    filter: brightness(1.3);
+}
+
+.innerCircle {
+    width: 60%;
+    height: 60%;
+    animation: circleRotation1 12s linear infinite;
+}
+
+.innerCircle2 {
+    width: 80%;
+    height: 80%;
+    animation: circleRotation2 15s linear infinite;
+}
+
+.innerCircle3 {
+    width: 40%;
+    height: 40%;
+    animation: circleRotation3 18s linear infinite;
+}
+
+.degreeMarkings {
+    position: absolute;
+    top: 149%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    transform: translate(-50%, -50%);
+}
+
+.degreeMarking {
+    margin-left: 50%;
+    margin-top: 0;
+    position: absolute;
+    width: 2px;
+    height: 10px;
+    background-color: rgba(0, 255, 0, 0.6);
+    transform-origin: 50% calc(50% - 38vmin);
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.4);
+    animation: markBlink 1.2s ease infinite;
+}
+
+/* Анимации */
+@keyframes radarWave {
+    0% {
+        transform: translate(-50%, -50%) scale(0.8);
+        opacity: 0.6;
+    }
+
+    50% {
+        transform: translate(-50%, -50%) scale(1.2);
+        opacity: 0.8;
+    }
+
+    100% {
+        transform: translate(-50%, -50%) scale(0.8);
+        opacity: 0.6;
+    }
+}
+
+@keyframes markBlink {
+
+    0%,
+    100% {
+        opacity: 0.5;
+    }
+
+    50% {
+        opacity: 0.8;
+    }
+}
+
+@keyframes droneFloat {
+
+    0%,
+    100% {
+        transform: translateY(0) rotate(-2deg);
+    }
+
+    50% {
+        transform: translateY(-20px) rotate(2deg);
+    }
+}
+
+.rotate-0 {
+    transform: rotate(0deg);
+}
+
+.rotate-10 {
+    transform: rotate(10deg);
+}
+
+.rotate-20 {
+    transform: rotate(20deg);
+}
+
+.rotate-30 {
+    transform: rotate(30deg);
+}
+
+.rotate-40 {
+    transform: rotate(40deg);
+}
+
+.rotate-50 {
+    transform: rotate(50deg);
+}
+
+.rotate-60 {
+    transform: rotate(60deg);
+}
+
+.rotate-70 {
+    transform: rotate(70deg);
+}
+
+.rotate-80 {
+    transform: rotate(80deg);
+}
+
+.rotate-90 {
+    transform: rotate(90deg);
+}
+
+.rotate-100 {
+    transform: rotate(100deg);
+}
+
+.rotate-110 {
+    transform: rotate(110deg);
+}
+
+.rotate-120 {
+    transform: rotate(120deg);
+}
+
+.rotate-130 {
+    transform: rotate(130deg);
+}
+
+.rotate-140 {
+    transform: rotate(140deg);
+}
+
+.rotate-150 {
+    transform: rotate(150deg);
+}
+
+.rotate-160 {
+    transform: rotate(160deg);
+}
+
+.rotate-170 {
+    transform: rotate(170deg);
+}
+
+.rotate-180 {
+    transform: rotate(180deg);
+}
+
+.rotate-190 {
+    transform: rotate(190deg);
+}
+
+.rotate-200 {
+    transform: rotate(200deg);
+}
+
+.rotate-210 {
+    transform: rotate(210deg);
+}
+
+.rotate-220 {
+    transform: rotate(220deg);
+}
+
+.rotate-230 {
+    transform: rotate(230deg);
+}
+
+.rotate-240 {
+    transform: rotate(240deg);
+}
+
+.rotate-250 {
+    transform: rotate(250deg);
+}
+
+.rotate-260 {
+    transform: rotate(260deg);
+}
+
+.rotate-270 {
+    transform: rotate(270deg);
+}
+
+.rotate-280 {
+    transform: rotate(280deg);
+}
+
+.rotate-290 {
+    transform: rotate(290deg);
+}
+
+.rotate-300 {
+    transform: rotate(300deg);
+}
+
+.rotate-310 {
+    transform: rotate(310deg);
+}
+
+.rotate-320 {
+    transform: rotate(320deg);
+}
+
+.rotate-330 {
+    transform: rotate(330deg);
+}
+
+.rotate-340 {
+    transform: rotate(340deg);
+}
+
+.rotate-350 {
+    transform: rotate(350deg);
+}
+
+.sector {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    transform-origin: center;
+    background: transparent;
+    transition: all 0.3s ease;
+}
+
+.sector.active {
+    background: radial-gradient(circle at 50% 50%,
+            rgba(80, 0, 0, 0.2) 0%,
+            rgba(40, 0, 0, 0.6) 70%,
+            rgba(20, 0, 0, 0.9) 100%);
+    box-shadow: 0 0 40px rgba(255, 0, 0, 0.7),
+        0 0 80px rgba(255, 0, 0, 0.4),
+        0 0 120px rgba(255, 0, 0, 0.2);
+    opacity: 0.8;
+    mix-blend-mode: screen;
+}
+
+.sector.active::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    animation: radarWave 3s linear infinite;
+    background: radial-gradient(circle,
+            rgba(255, 0, 0, 0.7) 0%,
+            rgba(255, 0, 0, 0.5) 20%,
+            transparent 60%);
+    filter: brightness(1.1) contrast(1.3);
+    opacity: 0.8;
+    mix-blend-mode: screen;
+}
+
+/* Стили для активного состояния радара */
+.radar.hasActiveSector {
+    background: transparent;
+    box-shadow: none;
+}
+
+.radar.hasActiveSector::after {
+    display: none;
+}
+
+.sector-4 {
+    transform: rotate(135deg);
+    clip-path: polygon(50% 50%, 100% 0, 100% 100%);
+}
+
+.sector-5 {
+    transform: rotate(180deg);
+    clip-path: polygon(50% 50%, 100% 0, 100% 100%);
+}
