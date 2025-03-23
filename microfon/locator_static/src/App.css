@@ -1,0 +1,189 @@
+.App {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-image: url(./Photo/background.jpg);
+  background-size: cover;
+  color: rgba(0, 255, 0, 0.5);
+  font-family: Arial, sans-serif;
+  overflow: hidden;
+}
+
+nav {
+  display: flex;
+  /* Горизонтальное размещение main и aside */
+  width: 100%;
+  height: 100%;
+}
+
+main {
+  flex: 3;
+  /* Занимает больше пространства */
+  margin-left: 0;
+  /* Убираем отрицательное смещение */
+  margin-top: 2%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.square {
+  width: 60%;
+  height: 90%;
+  position: relative;
+  margin: 0;
+}
+
+aside {
+  flex: 1;
+  background-color: rgba(0, 0, 0, 0.3);
+  color: white;
+  display: flex;
+  flex-direction: column;
+  /* Размещаем элементы вертикально */
+  justify-content: flex-start;
+  /* Выравниваем элементы сверху */
+  align-items: flex-start;
+  /* Выравниваем элементы слева */
+  padding: 20px;
+  /* Внутренние отступы */
+}
+
+.aside-container {
+  width: 100%;
+}
+
+.aside-container h2 {
+  font-size: 24px;
+  margin-bottom: 20px;
+  /* Отступ между заголовком и контентом */
+}
+
+.distance-info {
+  display: flex;
+  /* Размещаем текст и блок с расстоянием в строку */
+  align-items: center;
+  /* Центрируем элементы по вертикали */
+  margin-bottom: 20px;
+  /* Отступ снизу */
+}
+
+.distance-info p {
+  margin-right: 10px;
+  /* Отступ справа от текста */
+  font-size: 16px;
+
+}
+
+.info-box {
+  background: rgba(255, 255, 255, 0.2);
+  /* Полупрозрачный белый цвет */
+  -webkit-backdrop-filter: blur(10px);
+  /* Для поддержки Safari 9+ и iOS Safari 9+ */
+  backdrop-filter: blur(10px);
+  /* Размытие фона */
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+  text-align: center;
+  width: 100px;
+  /* Фиксированная ширина */
+  height: 15px;
+  /* Увеличенная высота для более удобного расположения текста */
+  display: flex;
+  /* Используем Flexbox */
+  justify-content: center;
+  /* Горизонтальное выравнивание */
+  align-items: center;
+  /* Вертикальное выравнивание */
+}
+
+.info-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.info-buttons button {
+  padding: 10px 20px;
+  background: rgba(0, 255, 0, 0.2);
+  border: 1px solid rgba(0, 255, 0, 0.5);
+  color: #00ff00;
+  cursor: pointer;
+  border-radius: 4px;
+  width: 100%;
+  transition: background-color 0.3s, transform 0.2s, border-color 0.3s;
+}
+
+.info-buttons button:hover {
+  background-color: #007bff;
+  color: white;
+  transform: scale(1.05);
+  border-color: #007bff;
+}
+
+.imgDron {
+  width: 50%;
+  height: auto;
+}
+
+button {
+  background-color: #007bff;
+  color: white;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-top: 20px;
+  /* Отступ сверху */
+}
+
+button:hover {
+  background-color: #0056b3;
+}
+
+.ws-status {
+  margin-top: 10px;
+  padding: 5px;
+  border-radius: 5px;
+  background-color: #f5f5f5;
+}
+
+.ws-status p {
+  margin: 0;
+  font-weight: bold;
+  text-align: center;
+}
+
+/* Стили для индикатора статуса соединения в правом верхнем углу */
+.connection-status {
+  position: fixed;
+  top: 10px;
+  right: 20px;
+  z-index: 1000;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+/* Стили для индикации статуса соединения */
+.connected {
+  color: green;
+  font-weight: bold;
+}
+
+.disconnected {
+  color: red;
+  font-weight: bold;
+}
+
+/* Расширенное поле для сектора обнаружения */
+.sector-info {
+  width: 180px !important;
+  /* Переопределяем стандартную ширину */
+}

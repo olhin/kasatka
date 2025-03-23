@@ -27,6 +27,7 @@ DATA_DIRS = {
     'test': 'test'
 }
 WEBSOCKET_PORT = 8765  # Порт для WebSocket сервера
+DEBUG_MODE = False  # Включение/отключение отладочного вывода
 
 # Глобальная переменная для хранения активных WebSocket соединений
 connected_clients = set()
@@ -41,6 +42,9 @@ async def send_to_clients(data):
             *[client.send(message) for client in connected_clients],
             return_exceptions=True
         )
+        print(f"WebSocket: отправлены данные о секторе '{data['sector']}' {len(connected_clients)} клиентам")
+    else:
+        print("WebSocket: нет подключенных клиентов")
 
 # Обработчик WebSocket соединений
 async def websocket_handler(websocket, path):
@@ -48,6 +52,8 @@ async def websocket_handler(websocket, path):
     connected_clients.add(websocket)
     print(f"Новое WebSocket соединение: {len(connected_clients)} активных соединений")
     try:
+        # Отправляем приветственное сообщение для проверки соединения
+        await websocket.send(json.dumps({"status": "connected", "message": "Соединение установлено"}))
         # Держим соединение открытым
         await websocket.wait_closed()
     finally:
@@ -70,6 +76,7 @@ class SoundClassifier:
         self.audio_buffers = {port: np.array([], dtype=np.float32) for port in PORTS}
         self.last_predictions = {}
         self.sample_rates = {}
+        self.sockets = {}  # Для хранения сокетов
         
         # Инициализация путей к данным
         self.data_dir = DATA_DIRS['train']
@@ -410,77 +417,72 @@ class SoundClassifier:
     
         print("="*60 + "\n")
 
-    def load_model(self):
-        if os.path.exists(MODEL_PATH):
-            try:
-                checkpoint = torch.load(
-                    MODEL_PATH,
-                    map_location='cpu',
-                    weights_only=False
-                )
-                self.le.classes_ = checkpoint['le_classes']
-                self.sample_rates = checkpoint.get('sample_rates', {})
-                
-                self.model = nn.Sequential(
-                    nn.Linear(checkpoint['input_size'], 512),
-                    nn.BatchNorm1d(512),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(512, 256),
-                    nn.BatchNorm1d(256),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(256, 128),
-                    nn.BatchNorm1d(128),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(128, 64),
-                    nn.BatchNorm1d(64),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(64, checkpoint['num_classes'])
-                )
-                self.model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"Модель загружена из {MODEL_PATH}")
-                return True
-            except Exception as e:
-                print(f"Ошибка загрузки модели: {str(e)}")
-                return False
-        print("Файл модели не найден")
-        return False
-
     def init_network(self):
-        """Инициализация сетевых сокетов"""
+        """Инициализация сетевых сокетов и запуск WebSocket сервера"""
         self.sockets = {}
+        
         for port in PORTS:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind(('0.0.0.0', port))
+            sock.setblocking(0)
             self.sockets[port] = sock
-            
-        # Инициализация event loop для asyncio
-        self.event_loop = asyncio.new_event_loop()
-        # Запускаем WebSocket сервер в отдельном потоке
-        threading.Thread(
-            target=self._run_websocket_server,
-            daemon=True
-        ).start()
-
+        
+        # Запуск WebSocket сервера в отдельном потоке
+        self._run_websocket_server()
+    
     def _run_websocket_server(self):
         """Запуск WebSocket сервера в отдельном потоке"""
+        # Создаем новый event loop для WebSocket сервера
+        self.event_loop = asyncio.new_event_loop()
+        # Запускаем WebSocket сервер в отдельном потоке
+        websocket_thread = threading.Thread(
+            target=self._start_websocket_loop,
+            daemon=True
+        )
+        websocket_thread.start()
+    
+    def _start_websocket_loop(self):
+        """Функция для запуска event loop в отдельном потоке"""
         asyncio.set_event_loop(self.event_loop)
         self.event_loop.run_until_complete(start_websocket_server())
-        self.event_loop.run_forever()
 
     def network_listener(self, port):
         """Прослушивание сетевого порта"""
         sock = self.sockets[port]
         print(f"Слушаем порт {port}...")
+        
+        # Константа для Windows WSAEWOULDBLOCK
+        WSAEWOULDBLOCK = 10035
+        
+        # Счетчик ошибок для предотвращения чрезмерного логирования
+        error_count = 0
+        last_log_time = time.time()
+        
         while self.running:
             try:
                 data, addr = sock.recvfrom(MAX_PACKET_SIZE)
+                # Сбрасываем счетчик ошибок при успешном получении данных
+                error_count = 0
+                last_log_time = time.time()
                 self.process_packet(port, data)
+            except socket.error as e:
+                # Обрабатываем ошибку WSAEWOULDBLOCK (нормальная для неблокирующих сокетов)
+                error_code = e.args[0]
+                if error_code == WSAEWOULDBLOCK:
+                    # Полностью подавляем вывод о WSAEWOULDBLOCK - это нормально для неблокирующих сокетов
+                    # Отображаем сообщение только в режиме отладки и не чаще раза в минуту
+                    current_time = time.time()
+                    if DEBUG_MODE and (current_time - last_log_time > 60):
+                        print(f"Порт {port} ожидает данные (это нормально)")
+                        last_log_time = current_time
+                else:
+                    # Это другая ошибка сокета - её логируем всегда
+                    print(f"Ошибка сокета на порту {port}: {str(e)}")
+                # Небольшая пауза для снижения нагрузки на CPU
+                time.sleep(0.02)
             except Exception as e:
-                print(f"Ошибка на порту {port}: {str(e)}")
+                print(f"Критическая ошибка на порту {port}: {str(e)}")
+                time.sleep(0.1)  # Пауза перед повторной попыткой
 
     def process_packet(self, port, data):
         """Обработка сетевых пакетов"""
@@ -578,10 +580,13 @@ class SoundClassifier:
                         "timestamp": time.time()
                     }
                     # Используем asyncio для отправки данных
-                    asyncio.run_coroutine_threadsafe(
-                        send_to_clients(data_to_send),
-                        self.event_loop
-                    )
+                    if hasattr(self, 'event_loop'):
+                        asyncio.run_coroutine_threadsafe(
+                            send_to_clients(data_to_send),
+                            self.event_loop
+                        )
+                    else:
+                        print("Ошибка: event_loop не доступен для отправки данных")
                     
                     for port, pred in predictions.items():
                         status = "ДРОН ОБНАРУЖЕН!" if pred['class'] == 'class1' else "Фоновый шум"

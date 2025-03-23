@@ -1,0 +1,228 @@
+/* Метки для 360, 90, 180 и 270 градусов */
+.degreeLabelTop, .degreeLabelRight, .degreeLabelBottom, .degreeLabelLeft, .degreeLabel10, .degreeLabel20, .degreeLabel30, .degreeLabel40,
+.degreeLabel50, .degreeLabel60, .degreeLabel70, .degreeLabel80, .degreeLabel100, .degreeLabel110, .degreeLabel120, .degreeLabel130,
+.degreeLabel140, .degreeLabel150, .degreeLabel160, .degreeLabel170, .degreeLabel190, .degreeLabel200, .degreeLabel210, .degreeLabel220,
+.degreeLabel230, .degreeLabel240, .degreeLabel250, .degreeLabel260, .degreeLabel280, .degreeLabel290, .degreeLabel300, .degreeLabel310,
+.degreeLabel320, .degreeLabel330, .degreeLabel340, .degreeLabel350 {
+    position: absolute;
+    font-size: 12px;
+    color: white;
+    font-weight: bold;
+    text-shadow: 0 0 5px rgba(0, 255, 0, 0.8); /* Светящийся эффект для меток */
+}
+
+.degreeLabel10 {
+    top: calc(-3.5vmin);
+    left: 60%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel20 {
+    top: calc(-1.5vmin);
+    left: 69%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel30 {
+    top: calc(1.3vmin);
+    left: 77%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel40 {
+    top: calc(5.5vmin);
+    left: 85%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel50 {
+    top: calc(11vmin);
+    left: 92%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel60{
+    top: calc(17vmin);
+    left: 97%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel70{
+    top: calc(23.5vmin);
+    left: 101%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel80 {
+    top: calc(30vmin);
+    left: 103%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel100 {
+    top: calc(44vmin);
+    left: 103%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel110 {
+    top: calc(51vmin);
+    left: 101%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel120 {
+    top: calc(57vmin);
+    left: 97%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel130 {
+    top: calc(63vmin);
+    left: 92%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel140 {
+    top: calc(68vmin);
+    left: 86%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel150 {
+    top: calc(73vmin);
+    left: 78%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel160 {
+    top: calc(76vmin);
+    left: 69%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel170 {
+    top: calc(78vmin);
+    left: 60%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel190 {
+    top: calc(78vmin);
+    left: 40%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel200 {
+    top: calc(76vmin);
+    left: 31%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel210 {
+    top: calc(73vmin);
+    left: 23%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel220 {
+    top: calc(69vmin);
+    left: 15%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel230 {
+    top: calc(64vmin);
+    left: 8%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel240 {
+    top: calc(58vmin);
+    left: 3%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel250 {
+    top: calc(51vmin);
+    left: -1%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel260 {
+    top: calc(44vmin);
+    left: -4%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel280 {
+    top: calc(31vmin);
+    left: -4%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel290 {
+    top: calc(24vmin);
+    left: -1%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel300 {
+    top: calc(17vmin);
+    left: 3%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel310 {
+    top: calc(11vmin);
+    left: 8%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel320 {
+    top: calc(6vmin);
+    left: 15%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel330 {
+    top: calc(1vmin);
+    left: 23%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel340 {
+    top: calc(-1.7vmin);
+    left: 31%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabel350 {
+    top: calc(-3.5vmin);
+    left: 40%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabelTop {
+    top: calc(-4vmin);
+    left: 50%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabelRight {
+    top: 50%;
+    right: calc(-4vmin);
+    transform: translate(0, -50%);
+}
+
+.degreeLabelBottom {
+    bottom: calc(-4vmin);
+    left: 50%;
+    transform: translate(-50%, 0);
+}
+
+.degreeLabelLeft {
+    top: 50%;
+    left: calc(-5vmin);
+    transform: translate(0, -50%);
+}
