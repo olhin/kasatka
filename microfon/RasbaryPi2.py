@@ -9,6 +9,9 @@ import time
 import threading
 import socket
 import struct
+import asyncio
+import websockets
+import json
 
 # Конфигурация
 PORTS = [5000, 5001, 5002, 5003]
@@ -23,6 +26,40 @@ DATA_DIRS = {
     'valid': 'valid',
     'test': 'test'
 }
+WEBSOCKET_PORT = 8765  # Порт для WebSocket сервера
+
+# Глобальная переменная для хранения активных WebSocket соединений
+connected_clients = set()
+
+# Функция для отправки данных через WebSocket
+async def send_to_clients(data):
+    if connected_clients:  # Проверка наличия подключенных клиентов
+        # Создаем JSON-объект для отправки
+        message = json.dumps(data)
+        # Отправляем всем подключенным клиентам
+        await asyncio.gather(
+            *[client.send(message) for client in connected_clients],
+            return_exceptions=True
+        )
+
+# Обработчик WebSocket соединений
+async def websocket_handler(websocket, path):
+    # Регистрируем нового клиента
+    connected_clients.add(websocket)
+    print(f"Новое WebSocket соединение: {len(connected_clients)} активных соединений")
+    try:
+        # Держим соединение открытым
+        await websocket.wait_closed()
+    finally:
+        # Удаляем клиента при отключении
+        connected_clients.remove(websocket)
+        print(f"WebSocket соединение закрыто: {len(connected_clients)} активных соединений")
+
+# Запуск WebSocket сервера
+async def start_websocket_server():
+    print(f"Запуск WebSocket сервера на порту {WEBSOCKET_PORT}...")
+    async with websockets.serve(websocket_handler, "0.0.0.0", WEBSOCKET_PORT):
+        await asyncio.Future()  # Бесконечное ожидание
 
 class SoundClassifier:
     def __init__(self):
@@ -419,7 +456,20 @@ class SoundClassifier:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind(('0.0.0.0', port))
             self.sockets[port] = sock
-            print(f"Сокет инициализирован на порту {port}")
+            
+        # Инициализация event loop для asyncio
+        self.event_loop = asyncio.new_event_loop()
+        # Запускаем WebSocket сервер в отдельном потоке
+        threading.Thread(
+            target=self._run_websocket_server,
+            daemon=True
+        ).start()
+
+    def _run_websocket_server(self):
+        """Запуск WebSocket сервера в отдельном потоке"""
+        asyncio.set_event_loop(self.event_loop)
+        self.event_loop.run_until_complete(start_websocket_server())
+        self.event_loop.run_forever()
 
     def network_listener(self, port):
         """Прослушивание сетевого порта"""
@@ -498,7 +548,6 @@ class SoundClassifier:
             print(f"Ошибка предсказания: {str(e)}")
             return {'class': 'error', 'confidence': 0, 'dBFS': -np.inf}
 
-# Модификация метода process_audio()
     def process_audio(self):
         while self.running:
             try:
@@ -522,6 +571,17 @@ class SoundClassifier:
                     print(f"{'Система мониторинга дронов':^60}")
                     print("="*60)
                     print(f"\nОпределенный сектор: \033[1m{sector}\033[0m\n")
+                    
+                    # Отправляем данные через WebSocket
+                    data_to_send = {
+                        "sector": sector,
+                        "timestamp": time.time()
+                    }
+                    # Используем asyncio для отправки данных
+                    asyncio.run_coroutine_threadsafe(
+                        send_to_clients(data_to_send),
+                        self.event_loop
+                    )
                     
                     for port, pred in predictions.items():
                         status = "ДРОН ОБНАРУЖЕН!" if pred['class'] == 'class1' else "Фоновый шум"

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 
 import Radar from './components/Radar/Radar';
@@ -10,12 +10,80 @@ let way = ""
 let edinica = ' '
 let object = ' '
 
+// Настройка WebSocket соединения
+const WS_URL = 'ws://localhost:8765'; // URL WebSocket сервера
+
 function App() {
   const [showImage, setShowImage] = useState(false);
   const [isRed, setIsRed] = useState(false);
   const [isRed2, setIsRed2] = useState(false);
   const [isRed3, setIsRed3] = useState(false);
+  const [currentSector, setCurrentSector] = useState("Не определен");
+  const [wsConnected, setWsConnected] = useState(false);
 
+  // Функция для отображения сектора в соответствии с данными от сервера
+  const updateSectorDisplay = (sector) => {
+    // Сначала сбрасываем все секторы
+    setIsRed(false);
+    setIsRed2(false);
+    setIsRed3(false);
+    
+    // Затем включаем нужный сектор
+    if (sector === 'СВЕРХУ-СЛЕВА') {
+      setIsRed(true);
+    } else if (sector === 'СВЕРХУ-СПРАВА') {
+      setIsRed2(true);
+    } else if (sector === 'СНИЗУ') {
+      setIsRed3(true);
+    }
+    
+    // Обновляем текущий сектор
+    setCurrentSector(sector);
+  };
+
+  // Установка WebSocket соединения при монтировании компонента
+  useEffect(() => {
+    // Создаем WebSocket соединение
+    const socket = new WebSocket(WS_URL);
+    
+    // Обработчик открытия соединения
+    socket.onopen = () => {
+      console.log('WebSocket соединение установлено');
+      setWsConnected(true);
+    };
+    
+    // Обработчик сообщений
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.sector) {
+          console.log('Получены данные о секторе:', data.sector);
+          updateSectorDisplay(data.sector);
+        }
+      } catch (error) {
+        console.error('Ошибка при обработке сообщения:', error);
+      }
+    };
+    
+    // Обработчик ошибок
+    socket.onerror = (error) => {
+      console.error('Ошибка WebSocket:', error);
+      setWsConnected(false);
+    };
+    
+    // Обработчик закрытия соединения
+    socket.onclose = () => {
+      console.log('WebSocket соединение закрыто');
+      setWsConnected(false);
+    };
+    
+    // Очистка при размонтировании компонента
+    return () => {
+      socket.close();
+    };
+  }, []); // Пустой массив зависимостей - выполняется только при монтировании
+
+  // Функции для ручной активации секторов (для тестирования)
   const handleColorChange = () => {
     setIsRed(true);
     setTimeout(() => {
@@ -82,8 +150,12 @@ function App() {
             <div className="distance-info">
               <p>Сектор обнаружения:</p>
               <div className="info-box">
-                <p>{way}{edinica}</p>
+                <p>{currentSector}</p>
               </div>
+            </div>
+
+            <div className="ws-status">
+              <p>Статус соединения: {wsConnected ? 'Подключено' : 'Отключено'}</p>
             </div>
 
             <div className="info-buttons">
