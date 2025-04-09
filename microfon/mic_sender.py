@@ -8,6 +8,8 @@ import sys
 import wave
 import os
 
+
+
 # Настройки аудио
 CHUNK = 1024  # количество семплов в буфере
 FORMAT = pyaudio.paFloat32  # формат аудио
