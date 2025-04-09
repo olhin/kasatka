@@ -116,25 +116,24 @@ class SoundClassifier:
                 self.le.classes_ = checkpoint['le_classes']
                 self.sample_rates = checkpoint.get('sample_rates', {})
                 
+                # Создаем модель с правильной архитектурой
+                input_size = checkpoint['input_size']
+                hidden_size = 256  # Используем 256 нейронов в скрытом слое
+                num_classes = checkpoint['num_classes']
+                
                 self.model = nn.Sequential(
-                    nn.Linear(checkpoint['input_size'], 512),
-                    nn.BatchNorm1d(512),
+                    nn.Linear(input_size, hidden_size),
+                    nn.BatchNorm1d(hidden_size),
                     nn.ReLU(),
                     nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(512, 256),
-                    nn.BatchNorm1d(256),
+                    nn.Linear(hidden_size, hidden_size // 2),
+                    nn.BatchNorm1d(hidden_size // 2),
                     nn.ReLU(),
                     nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(256, 128),
-                    nn.BatchNorm1d(128),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(128, 64),
-                    nn.BatchNorm1d(64),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(64, checkpoint['num_classes'])
+                    nn.Linear(hidden_size // 2, num_classes)
                 )
+                
+                # Загружаем веса
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 print(f"Модель загружена из {MODEL_PATH}")
                 return True
@@ -153,8 +152,8 @@ class SoundClassifier:
         try:
             self.load_data()
             self.create_model()
-            self.train(num_epochs=250)
-            self.save_model()  # 🔄 Исправленный вызов
+            self.train(num_epochs=3000)  # Увеличиваем количество эпох до 3000
+            self.save_model()
             print("\nОбучение успешно завершено!\n")
             self.load_model()
         except Exception as e:
@@ -272,36 +271,31 @@ class SoundClassifier:
         print(f"Всего: {len(labels)} примеров\n")
 
     def create_model(self):
-        input_size = N_MFCC
-        num_classes = len(self.le.classes_)
+        """Создание модели нейронной сети"""
+        input_size = 40  # Размер входного вектора признаков (MFCC)
+        hidden_size = 256  # Размер скрытого слоя
+        num_classes = 2  # Количество классов (дрон/фон)
+        
         self.model = nn.Sequential(
-            nn.Linear(input_size, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(input_size, hidden_size),
+            nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
             nn.Dropout(DROPOUT_RATE),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.BatchNorm1d(hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(DROPOUT_RATE),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(DROPOUT_RATE),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(DROPOUT_RATE),
-            nn.Linear(64, num_classes)
+            nn.Linear(hidden_size // 2, num_classes)
         )
+        
+        # Инициализация весов
+        for m in self.model.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                nn.init.zeros_(m.bias)
+        
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 
-            mode='min', 
-            factor=0.5, 
-            patience=3,
-            verbose=True
-        )
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
 
     def train(self, num_epochs=250):
         X_tensor = torch.tensor(self.X, dtype=torch.float32)
@@ -422,11 +416,21 @@ class SoundClassifier:
         self.sockets = {}
         
         for port in PORTS:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(('0.0.0.0', port))
-            sock.setblocking(0)
-            self.sockets[port] = sock
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(('0.0.0.0', port))
+                sock.setblocking(0)
+                self.sockets[port] = sock
+                print(f"Сокет успешно инициализирован на порту {port}")
+            except Exception as e:
+                print(f"Ошибка инициализации сокета на порту {port}: {str(e)}")
+                if port in self.sockets:
+                    del self.sockets[port]
         
+        if not self.sockets:
+            raise Exception("Не удалось инициализировать ни один сокет")
+            
         # Запуск WebSocket сервера в отдельном потоке
         self._run_websocket_server()
     
@@ -448,6 +452,10 @@ class SoundClassifier:
 
     def network_listener(self, port):
         """Прослушивание сетевого порта"""
+        if port not in self.sockets:
+            print(f"Порт {port} не инициализирован")
+            return
+            
         sock = self.sockets[port]
         print(f"Слушаем порт {port}...")
         
@@ -487,8 +495,27 @@ class SoundClassifier:
     def process_packet(self, port, data):
         """Обработка сетевых пакетов"""
         try:
+            if len(data) < 8:  # Минимальный размер пакета (timestamp + хотя бы один сэмпл)
+                print(f"Порт {port}: Получен слишком короткий пакет ({len(data)} байт)")
+                return
+                
             timestamp = struct.unpack('d', data[:8])[0]
             audio_chunk = np.frombuffer(data[8:], dtype=np.float32)
+            
+            # Проверка на валидность аудиоданных
+            if len(audio_chunk) == 0:
+                print(f"Порт {port}: Получен пустой аудиочанк")
+                return
+                
+            if np.isnan(audio_chunk).any() or np.isinf(audio_chunk).any():
+                print(f"Порт {port}: Обнаружены некорректные значения в аудиоданных")
+                return
+                
+            # Проверка уровня сигнала
+            rms = np.sqrt(np.mean(audio_chunk**2))
+            if rms < 1e-6:  # Слишком тихий сигнал
+                print(f"Порт {port}: Сигнал слишком тихий (RMS: {rms})")
+                return
             
             with self.lock:
                 self.audio_buffers[port] = np.concatenate([
@@ -497,55 +524,105 @@ class SoundClassifier:
                 ])[-BUFFER_SIZE:]
                 
         except Exception as e:
-            print(f"Ошибка обработки пакета: {str(e)}")
+            print(f"Ошибка обработки пакета на порту {port}: {str(e)}")
 
     def predict(self, audio):
-   
         try:
             if len(audio) == 0:
                 return {'class': 'error', 'confidence': 0, 'dBFS': -np.inf}
             
-        # Проверка на тишину
+            # Проверка на тишину
             if np.all(np.abs(audio) < 1e-6):
                 return {'class': 'silence', 'confidence': 0, 'dBFS': -np.inf}
 
-        # Нормализация аудио
+            # Нормализация аудио
             audio = librosa.util.normalize(audio)
-        
-        # Вычисление MFCC
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                mfcc = librosa.feature.mfcc(
-                    y=audio,
-                    sr=TARGET_SAMPLE_RATE,
-                    n_mfcc=N_MFCC,
-                    n_fft=2048,
-                    hop_length=512
-                )
-            mfcc = np.mean(mfcc.T, axis=0)
-
-        # Проверка на валидность MFCC
-            if np.isnan(mfcc).any() or np.isinf(mfcc).any():
-                return {'class': 'error', 'confidence': 0, 'dBFS': -np.inf}
-
-        # Предсказание
-            self.model.eval()  # Важно: переключаем в режим оценки
+            
+            # Вычисление RMS энергии
+            rms = np.sqrt(np.mean(audio**2))
+            dBFS = 20 * np.log10(rms) if rms > 0 else -np.inf
+            
+            # Если уровень звука слишком низкий, считаем это тишиной
+            if dBFS < -50:  # Уменьшили порог тишины
+                return {'class': 'silence', 'confidence': 0, 'dBFS': dBFS}
+            
+            # Вычисление MFCC
+            mfcc = librosa.feature.mfcc(
+                y=audio,
+                sr=TARGET_SAMPLE_RATE,
+                n_mfcc=40,
+                n_fft=2048,
+                hop_length=512
+            )
+            
+            # Усредняем MFCC по времени
+            features = np.mean(mfcc.T, axis=0)
+            
+            # Проверка на валидность признаков
+            if np.isnan(features).any() or np.isinf(features).any():
+                return {'class': 'error', 'confidence': 0, 'dBFS': dBFS}
+            
+            # Предсказание
+            self.model.eval()
             with torch.no_grad():
-                inputs = torch.tensor(mfcc, dtype=torch.float32).unsqueeze(0)
+                inputs = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
                 outputs = self.model(inputs)
                 proba = torch.softmax(outputs, dim=1)
                 conf, pred = torch.max(proba, 1)
-        
-        # Расчет уровня звука
-            rms = np.sqrt(np.mean(audio**2))
-            dBFS = 20 * np.log10(rms) if rms > 0 else -np.inf
-
+            
+            # Дополнительные проверки для уменьшения ложных срабатываний
+            # 1. Проверка спектральных характеристик
+            spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=audio, sr=TARGET_SAMPLE_RATE))
+            spectral_bandwidth = np.mean(librosa.feature.spectral_bandwidth(y=audio, sr=TARGET_SAMPLE_RATE))
+            spectral_rolloff = np.mean(librosa.feature.spectral_rolloff(y=audio, sr=TARGET_SAMPLE_RATE))
+            
+            # 2. Проверка временных характеристик
+            zero_crossings = np.mean(librosa.feature.zero_crossing_rate(y=audio))
+            
+            # 3. Проверка ритмических характеристик
+            onset_env = librosa.onset.onset_strength(y=audio, sr=TARGET_SAMPLE_RATE)
+            tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=TARGET_SAMPLE_RATE)[0]
+            
+            # Корректировка уверенности на основе характеристик
+            # 1. Уровень звука
+            if dBFS < -30:  # Дрон обычно громче
+                conf = conf * 0.3
+            elif dBFS > -10:  # Слишком громкий звук
+                conf = conf * 0.7
+            
+            # 2. Спектральные характеристики
+            if spectral_centroid < 2000 or spectral_centroid > 8000:  # Дрон обычно в этом диапазоне
+                conf = conf * 0.5
+            if spectral_bandwidth < 1000 or spectral_bandwidth > 5000:  # Дрон обычно в этом диапазоне
+                conf = conf * 0.5
+            if spectral_rolloff < 3000 or spectral_rolloff > 10000:  # Дрон обычно в этом диапазоне
+                conf = conf * 0.5
+            
+            # 3. Временные характеристики
+            if zero_crossings < 0.05 or zero_crossings > 0.2:  # Дрон обычно в этом диапазоне
+                conf = conf * 0.5
+            
+            # 4. Ритмические характеристики
+            if tempo < 100 or tempo > 300:  # Дрон обычно в этом диапазоне
+                conf = conf * 0.5
+            
+            # 5. Проверка стабильности сигнала
+            signal_variance = np.var(audio)
+            if signal_variance < 0.01 or signal_variance > 0.5:  # Дрон обычно в этом диапазоне
+                conf = conf * 0.5
+            
+            # Ограничиваем уверенность в пределах [0, 1]
+            conf = min(max(conf.item(), 0), 1)
+            
+            # Повышаем порог уверенности для определения дрона
+            class_label = 'class1' if pred.item() == 1 and conf > 0.85 else 'class2'  # Повышенный порог
+            
             return {
-                'class': self.le.inverse_transform([pred.item()])[0],
-                'confidence': conf.item(),
+                'class': class_label,
+                'confidence': conf,
                 'dBFS': dBFS
             }
-        
+            
         except Exception as e:
             print(f"Ошибка предсказания: {str(e)}")
             return {'class': 'error', 'confidence': 0, 'dBFS': -np.inf}

@@ -204,8 +204,18 @@ const RulerTopBottom = (props) => {
                 <div className={`${classes.tickTop} ${classes.left98}`}></div>
                 <div className={`${classes.tickTop} ${classes.left98_5}`}></div>
                 <div className={`${classes.tickTop} ${classes.left99}`}></div>
-                <div className={`${classes.tickTop} ${classes.left99_5}`}></div>
+                <div className={`${classes.tickTopLarge} ${classes.left99_5}`}></div>
                 <div className={`${classes.tickTop} ${classes.left100}`}></div>
+                <div className={`${classes.tickTop} ${classes.left100_5}`}></div>
+                <div className={`${classes.tickTop} ${classes.left101}`}></div>
+                <div className={`${classes.tickTop} ${classes.left101_5}`}></div>
+                <div className={`${classes.tickTop} ${classes.left102}`}></div>
+                <div className={`${classes.tickTop} ${classes.left102_5}`}></div>
+                <div className={`${classes.tickTop} ${classes.left103}`}></div>
+                <div className={`${classes.tickTop} ${classes.left103_5}`}></div>
+                <div className={`${classes.tickTop} ${classes.left104}`}></div>
+                <div className={`${classes.tickTop} ${classes.left104_5}`}></div>
+                
             </div>
 
 
