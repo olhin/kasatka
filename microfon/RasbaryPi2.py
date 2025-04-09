@@ -12,12 +12,43 @@ import struct
 import asyncio
 import websockets
 import json
+import argparse
+
+# Импорт TensorFlow вместо tflite_runtime
+try:
+    import tensorflow as tf
+    TENSORFLOW_AVAILABLE = True
+except ImportError:
+    TENSORFLOW_AVAILABLE = False
+    print("ВНИМАНИЕ: TensorFlow не установлен. Демо-режим не будет работать.")
+    print("Для установки TensorFlow выполните: pip install tensorflow")
+
+def find_model_file(filename):
+    """Ищет файл модели в нескольких возможных местах"""
+    possible_paths = [
+        filename,                     # Текущая директория
+        f"../{filename}",             # Родительская директория
+        f"../../{filename}",          # Директория на два уровня выше
+        f"../../../{filename}",       # Директория на три уровня выше
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            print(f"Найден файл: {path}")
+            return path
+    
+    print(f"Не удалось найти файл {filename} ни в одном из следующих мест:")
+    for path in possible_paths:
+        print(f"  - {path}")
+    return None
 
 # Конфигурация
 PORTS = [5000, 5001, 5002, 5003]
 TARGET_SAMPLE_RATE = 44100
 N_MFCC = 40
 MODEL_PATH = 'sound_classifier_model.pth'
+TFLITE_MODEL_PATH = 'soundclassifier_with_metadata.tflite'
+LABELS_PATH = 'labels.txt'
 BUFFER_SIZE = 44100 * 2  # 2 секунды аудио
 MAX_PACKET_SIZE = 4096
 DROPOUT_RATE = 0.6
@@ -32,19 +63,26 @@ DEBUG_MODE = False  # Включение/отключение отладочно
 # Глобальная переменная для хранения активных WebSocket соединений
 connected_clients = set()
 
+# Режим работы (дрон или хлопок)
+OPERATING_MODE = "drone"  # По умолчанию режим дрона
+
 # Функция для отправки данных через WebSocket
 async def send_to_clients(data):
     if connected_clients:  # Проверка наличия подключенных клиентов
         # Создаем JSON-объект для отправки
         message = json.dumps(data)
         # Отправляем всем подключенным клиентам
-        await asyncio.gather(
-            *[client.send(message) for client in connected_clients],
-            return_exceptions=True
-        )
-        print(f"WebSocket: отправлены данные о секторе '{data['sector']}' {len(connected_clients)} клиентам")
+        try:
+            await asyncio.gather(
+                *[client.send(message) for client in connected_clients],
+                return_exceptions=True
+            )
+            print(f"WebSocket: отправлены данные о секторе '{data['sector']}' {len(connected_clients)} клиентам")
+        except Exception as e:
+            print(f"Ошибка WebSocket при отправке: {str(e)}")
     else:
         print("WebSocket: нет подключенных клиентов")
+    return True  # Возвращаем True для подтверждения отправки
 
 # Обработчик WebSocket соединений
 async def websocket_handler(websocket, path):
@@ -68,7 +106,10 @@ async def start_websocket_server():
         await asyncio.Future()  # Бесконечное ожидание
 
 class SoundClassifier:
-    def __init__(self):
+    def __init__(self, mode="drone"):
+        global OPERATING_MODE
+        OPERATING_MODE = mode
+        
         self.le = LabelEncoder()
         self.model = None
         self.running = True
@@ -78,17 +119,84 @@ class SoundClassifier:
         self.sample_rates = {}
         self.sockets = {}  # Для хранения сокетов
         
+        # Добавляем таймер для отслеживания времени последнего обнаружения
+        self.last_detection_time = 0
+        self.current_active_sector = "Не определен"
+        
         # Инициализация путей к данным
         self.data_dir = DATA_DIRS['train']
         self.valid_dir = DATA_DIRS['valid']
         self.test_dir = DATA_DIRS['test']
         
-        if not self.load_model():  # Попытка загрузки модели
-            self.init_training()    # Запуск обучения если модель не найдена
+        print(f"Инициализация в режиме: {OPERATING_MODE}")
+        
+        if OPERATING_MODE == "drone":
+            if not self.load_model():  # Попытка загрузки модели
+                self.init_training()    # Запуск обучения если модель не найдена
+        else:  # Режим хлопка
+            # Проверяем, доступен ли TensorFlow
+            if not TENSORFLOW_AVAILABLE:
+                print("Критическая ошибка: TensorFlow не установлен, но выбран режим хлопка!")
+                print("Пожалуйста, установите TensorFlow: pip install tensorflow")
+                print("Или запустите install_dependencies.bat")
+                print("Переключение на стандартный режим дрона...")
+                OPERATING_MODE = "drone"
+                if not self.load_model():  # Попытка загрузки модели
+                    self.init_training()   # Запуск обучения если модель не найдена
+            elif not self.load_tflite_model():
+                print("Критическая ошибка: не удалось загрузить TensorFlow модель для режима хлопка!")
+                print("Переключение на стандартный режим дрона...")
+                OPERATING_MODE = "drone"
+                if not self.load_model():  # Попытка загрузки модели
+                    self.init_training()   # Запуск обучения если модель не найдена
             
         self.init_network()
 
-    # 🔄 Перемещен метод save_model выше load_model
+    def load_tflite_model(self):
+        """Загрузка TensorFlow модели для режима хлопка"""
+        try:
+            # Проверяем наличие TensorFlow
+            if not TENSORFLOW_AVAILABLE:
+                print("Ошибка: TensorFlow не установлен. Невозможно использовать демо-режим.")
+                return False
+                
+            # Поиск файла модели
+            tflite_path = find_model_file(TFLITE_MODEL_PATH)
+            if not tflite_path:
+                print(f"Файл TFLite модели не найден.")
+                return False
+                
+            # Поиск файла меток
+            labels_path = find_model_file(LABELS_PATH)
+            if not labels_path:
+                print(f"Файл меток не найден.")
+                labels_path = None  # Используем метки по умолчанию
+                
+            # Загрузка модели TensorFlow Lite с помощью интерпретатора
+            self.interpreter = tf.lite.Interpreter(model_path=tflite_path)
+            self.interpreter.allocate_tensors()
+            
+            # Получение информации о входных и выходных тензорах
+            self.input_details = self.interpreter.get_input_details()
+            self.output_details = self.interpreter.get_output_details()
+            
+            # Загрузка меток классов
+            if labels_path and os.path.exists(labels_path):
+                with open(labels_path, 'r', encoding='utf-8') as f:
+                    self.labels = [line.strip().split(' ', 1)[1] for line in f.readlines()]
+                print(f"Загружены метки классов: {self.labels}")
+            else:
+                print(f"Используются метки по умолчанию.")
+                self.labels = ["Class 2", "Фоновый шум"]  # Метки по умолчанию
+                
+            print(f"TensorFlow Lite модель успешно загружена")
+            return True
+            
+        except Exception as e:
+            print(f"Ошибка при загрузке TensorFlow модели: {str(e)}")
+            return False
+
+    # 🔄 Существующий метод save_model
     def save_model(self):
         """Сохранение модели на диск"""
         try:
@@ -412,43 +520,62 @@ class SoundClassifier:
         print("="*60 + "\n")
 
     def init_network(self):
-        """Инициализация сетевых сокетов и запуск WebSocket сервера"""
-        self.sockets = {}
+        """Инициализация сетевого кода"""
+        print("Инициализация сетевого компонента...")
         
+        # Создаем UDP-сокеты для каждого порта
         for port in PORTS:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(('0.0.0.0', port))
-                sock.setblocking(0)
-                self.sockets[port] = sock
-                print(f"Сокет успешно инициализирован на порту {port}")
-            except Exception as e:
-                print(f"Ошибка инициализации сокета на порту {port}: {str(e)}")
-                if port in self.sockets:
-                    del self.sockets[port]
-        
-        if not self.sockets:
-            raise Exception("Не удалось инициализировать ни один сокет")
+            print(f"  Открытие порта {port}...")
             
-        # Запуск WebSocket сервера в отдельном потоке
-        self._run_websocket_server()
-    
-    def _run_websocket_server(self):
-        """Запуск WebSocket сервера в отдельном потоке"""
-        # Создаем новый event loop для WebSocket сервера
-        self.event_loop = asyncio.new_event_loop()
-        # Запускаем WebSocket сервер в отдельном потоке
-        websocket_thread = threading.Thread(
-            target=self._start_websocket_loop,
+            # Создание UDP-сокета
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+            sock.bind(('0.0.0.0', port))
+            sock.setblocking(False)
+            
+            # Сохраняем сокет
+            self.sockets[port] = sock
+            print(f"  Порт {port} открыт")
+            
+        # Запуск WebSocket сервера
+        self._start_websocket_loop()
+        
+        # Запуск сетевых потоков для прослушивания
+        self.listeners = []
+        for port in PORTS:
+            thread = threading.Thread(
+                target=self.network_listener,
+                args=(port,),
+                daemon=True
+            )
+            thread.start()
+            self.listeners.append(thread)
+            
+        print("Сетевой компонент инициализирован")
+        
+        # Запуск основного цикла обработки в отдельном потоке
+        self.process_thread = threading.Thread(
+            target=self.process_audio,
             daemon=True
         )
-        websocket_thread.start()
-    
+        self.process_thread.start()
+
+    def _run_websocket_server(self):
+        """Запуск WebSocket сервера"""
+        try:
+            self.event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.event_loop)
+            self.event_loop.run_until_complete(start_websocket_server())
+        except Exception as e:
+            print(f"Ошибка запуска WebSocket сервера: {str(e)}")
+        finally:
+            if hasattr(self, 'event_loop'):
+                self.event_loop.close()
+
     def _start_websocket_loop(self):
-        """Функция для запуска event loop в отдельном потоке"""
-        asyncio.set_event_loop(self.event_loop)
-        self.event_loop.run_until_complete(start_websocket_server())
+        """Запуск WebSocket сервера в отдельном потоке"""
+        self.websocket_thread = threading.Thread(target=self._run_websocket_server, daemon=True)
+        self.websocket_thread.start()
 
     def network_listener(self, port):
         """Прослушивание сетевого порта"""
@@ -527,239 +654,413 @@ class SoundClassifier:
             print(f"Ошибка обработки пакета на порту {port}: {str(e)}")
 
     def predict(self, audio):
+        """Классификация аудиосигнала"""
+        if OPERATING_MODE == "drone":
+            return self._predict_drone(audio)
+        else:
+            return self._predict_clap(audio)
+            
+    def _predict_drone(self, audio):
+        """Классификация звука дрона с использованием PyTorch модели"""
+        # Проверка длины аудио
+        if len(audio) < TARGET_SAMPLE_RATE:
+            return "Фоновый шум", 0.0  # Недостаточно данных
+            
         try:
-            if len(audio) == 0:
-                return {'class': 'error', 'confidence': 0, 'dBFS': -np.inf}
+            # Извлечение MFCC признаков
+            mfccs = librosa.feature.mfcc(y=audio, sr=TARGET_SAMPLE_RATE, n_mfcc=N_MFCC)
+            mfccs_processed = np.mean(mfccs.T, axis=0)
             
-            # Проверка на тишину
-            if np.all(np.abs(audio) < 1e-6):
-                return {'class': 'silence', 'confidence': 0, 'dBFS': -np.inf}
-
-            # Нормализация аудио
-            audio = librosa.util.normalize(audio)
+            # Преобразование в тензор PyTorch
+            features = torch.tensor(mfccs_processed, dtype=torch.float32).unsqueeze(0)
             
-            # Вычисление RMS энергии
+            # Получение предсказания
+            with torch.no_grad():
+                self.model.eval()
+                logits = self.model(features)
+                probabilities = torch.nn.functional.softmax(logits, dim=1)
+                max_prob, predicted_class = torch.max(probabilities, 1)
+                
+            # Получаем метку класса и вероятность
+            class_name = self.le.classes_[predicted_class.item()]
+            confidence = max_prob.item()
+            
+            return class_name, confidence
+            
+        except Exception as e:
+            print(f"Ошибка предсказания (PyTorch): {str(e)}")
+            return "Ошибка", 0.0
+            
+    def _predict_clap(self, audio):
+        """Классификация звука хлопка с использованием TensorFlow Lite модели"""
+        # Проверка длины аудио
+        if len(audio) < TARGET_SAMPLE_RATE:
+            return "Фоновый шум", 0.0  # Недостаточно данных
+            
+        try:
+            # Вычисляем уровень громкости
             rms = np.sqrt(np.mean(audio**2))
             dBFS = 20 * np.log10(rms) if rms > 0 else -np.inf
             
-            # Если уровень звука слишком низкий, считаем это тишиной
-            if dBFS < -50:  # Уменьшили порог тишины
-                return {'class': 'silence', 'confidence': 0, 'dBFS': dBFS}
+            # Если звук достаточно громкий, считаем его хлопком
+            # Устанавливаем порог в -21 dBFS согласно требованию
+            if dBFS > -21:
+                print(f"Обнаружен громкий звук: {dBFS:.1f} dBFS - распознаём как хлопок")
+                return "Class 2", 1.0  # Обнаружили хлопок с максимальной уверенностью
             
-            # Вычисление MFCC
-            mfcc = librosa.feature.mfcc(
-                y=audio,
-                sr=TARGET_SAMPLE_RATE,
-                n_mfcc=40,
-                n_fft=2048,
-                hop_length=512
-            )
+            # Извлечение признаков для модели
+            mfccs = librosa.feature.mfcc(y=audio, sr=TARGET_SAMPLE_RATE, n_mfcc=40)
+            mfccs_processed = np.mean(mfccs.T, axis=0)
             
-            # Усредняем MFCC по времени
-            features = np.mean(mfcc.T, axis=0)
+            # Подготовка входных данных для TFLite модели
+            input_shape = self.input_details[0]['shape']
+            input_data = np.expand_dims(mfccs_processed, axis=0).astype(np.float32)
             
-            # Проверка на валидность признаков
-            if np.isnan(features).any() or np.isinf(features).any():
-                return {'class': 'error', 'confidence': 0, 'dBFS': dBFS}
+            # Проверяем, совпадает ли форма входных данных с ожидаемой
+            if input_data.shape != tuple(input_shape):
+                # Если нет, изменяем размерность
+                input_data = np.resize(input_data, input_shape)
             
-            # Предсказание
-            self.model.eval()
-            with torch.no_grad():
-                inputs = torch.tensor(features, dtype=torch.float32).unsqueeze(0)
-                outputs = self.model(inputs)
-                proba = torch.softmax(outputs, dim=1)
-                conf, pred = torch.max(proba, 1)
+            # Выполнение предсказания
+            self.interpreter.set_tensor(self.input_details[0]['index'], input_data)
+            self.interpreter.invoke()
             
-            # Дополнительные проверки для уменьшения ложных срабатываний
-            # 1. Проверка спектральных характеристик
-            spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=audio, sr=TARGET_SAMPLE_RATE))
-            spectral_bandwidth = np.mean(librosa.feature.spectral_bandwidth(y=audio, sr=TARGET_SAMPLE_RATE))
-            spectral_rolloff = np.mean(librosa.feature.spectral_rolloff(y=audio, sr=TARGET_SAMPLE_RATE))
+            # Получение результатов
+            output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
             
-            # 2. Проверка временных характеристик
-            zero_crossings = np.mean(librosa.feature.zero_crossing_rate(y=audio))
+            # Получение класса с максимальной вероятностью
+            predicted_idx = np.argmax(output_data[0])
+            confidence = output_data[0][predicted_idx]
             
-            # 3. Проверка ритмических характеристик
-            onset_env = librosa.onset.onset_strength(y=audio, sr=TARGET_SAMPLE_RATE)
-            tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=TARGET_SAMPLE_RATE)[0]
+            # Получаем метку класса
+            class_name = self.labels[predicted_idx] if predicted_idx < len(self.labels) else f"Класс {predicted_idx}"
             
-            # Корректировка уверенности на основе характеристик
-            # 1. Уровень звука
-            if dBFS < -30:  # Дрон обычно громче
-                conf = conf * 0.3
-            elif dBFS > -10:  # Слишком громкий звук
-                conf = conf * 0.7
+            # Выводим отладочную информацию только если уровень выше -30 dBFS
+            if dBFS > -30:
+                print(f"Результат классификации: {class_name}, уверенность: {confidence:.1%}, уровень: {dBFS:.1f} dBFS")
             
-            # 2. Спектральные характеристики
-            if spectral_centroid < 2000 or spectral_centroid > 8000:  # Дрон обычно в этом диапазоне
-                conf = conf * 0.5
-            if spectral_bandwidth < 1000 or spectral_bandwidth > 5000:  # Дрон обычно в этом диапазоне
-                conf = conf * 0.5
-            if spectral_rolloff < 3000 or spectral_rolloff > 10000:  # Дрон обычно в этом диапазоне
-                conf = conf * 0.5
-            
-            # 3. Временные характеристики
-            if zero_crossings < 0.05 or zero_crossings > 0.2:  # Дрон обычно в этом диапазоне
-                conf = conf * 0.5
-            
-            # 4. Ритмические характеристики
-            if tempo < 100 or tempo > 300:  # Дрон обычно в этом диапазоне
-                conf = conf * 0.5
-            
-            # 5. Проверка стабильности сигнала
-            signal_variance = np.var(audio)
-            if signal_variance < 0.01 or signal_variance > 0.5:  # Дрон обычно в этом диапазоне
-                conf = conf * 0.5
-            
-            # Ограничиваем уверенность в пределах [0, 1]
-            conf = min(max(conf.item(), 0), 1)
-            
-            # Повышаем порог уверенности для определения дрона
-            class_label = 'class1' if pred.item() == 1 and conf > 0.85 else 'class2'  # Повышенный порог
-            
-            return {
-                'class': class_label,
-                'confidence': conf,
-                'dBFS': dBFS
-            }
+            return class_name, float(confidence)
             
         except Exception as e:
-            print(f"Ошибка предсказания: {str(e)}")
-            return {'class': 'error', 'confidence': 0, 'dBFS': -np.inf}
+            print(f"Ошибка предсказания (TFLite): {str(e)}")
+            return "Ошибка", 0.0
 
     def process_audio(self):
+        """Основной цикл обработки аудио"""
+        print("Запуск обработки аудио...")
+        
+        # Вывод заголовка таблицы статуса
+        print("\n" + "-"*82)
+        print(f"{'Порт':<8} {'Устройство':<12} {'Статус':<20} {'Уверенность':<10} {'Уровень':<12} {'Буфер':<10}")
+        print("-"*82)
+        print("\n" * 4)  # Добавляем пустые строки для начального вывода
+            
+        # Последнее время отправки данных на фронтенд
+        last_websocket_update = 0
+            
+        # Основной цикл обработки
         while self.running:
             try:
-                predictions = {}
-                for port in PORTS:
-                    with self.lock:
-                        buffer = self.audio_buffers[port]
-                    # Накопление 2 секунд аудио перед обработкой
-                        if len(buffer) >= BUFFER_SIZE:
-                            audio = buffer[-BUFFER_SIZE:]  # Берем последние 2 секунды
-                            self.audio_buffers[port] = np.array([], dtype=np.float32)
-                            predictions[port] = self.predict(audio)
+                # Проверяем наличие данных в буферах
+                with self.lock:
+                    all_empty = all(len(buf) == 0 for buf in self.audio_buffers.values())
+                    if all_empty:
+                        time.sleep(0.1)
+                        continue
                 
-                if predictions:
-                    self.last_predictions = {
-                        i+1: pred for i, (port, pred) in enumerate(predictions.items())
-                    }
+                # Создаем копии буферов для обработки
+                current_buffers = {}
+                
+                with self.lock:
+                    for port, buffer in self.audio_buffers.items():
+                        current_buffers[port] = buffer.copy() if len(buffer) > 0 else np.array([], dtype=np.float32)
+                
+                # Обрабатываем каждый буфер отдельно
+                predictions = {}
+                
+                for port, buffer in current_buffers.items():
+                    if len(buffer) == 0:
+                        # Если буфер пуст, используем предыдущее предсказание или "молчание"
+                        predictions[port] = self.last_predictions.get(port, ("Фоновый шум", 0.0, -np.inf))
+                        continue
                     
-                    sector = self.determine_sector()
-                    print("\n" + "="*60)
-                    print(f"{'Система мониторинга дронов':^60}")
-                    print("="*60)
-                    print(f"\nОпределенный сектор: \033[1m{sector}\033[0m\n")
+                    # Для каждого порта делаем предсказание
+                    class_name, confidence = self.predict(buffer)
                     
-                    # Отправляем данные через WebSocket
+                    # Вычисляем уровень звука в дБ
+                    if len(buffer) > 0:
+                        rms = np.sqrt(np.mean(buffer**2))
+                        dBFS = 20 * np.log10(rms) if rms > 0 else -np.inf
+                    else:
+                        dBFS = -np.inf
+                    
+                    # Сохраняем предсказание и уровень
+                    predictions[port] = (class_name, confidence, dBFS)
+                    self.last_predictions[port] = predictions[port]
+                
+                # Определяем текущий активный сектор
+                current_sector = self.determine_sector()
+                
+                # Отправляем информацию о секторе через WebSocket
+                # Отправляем каждые 100 мс или при изменении сектора
+                current_time = time.time()
+                should_update = (current_time - last_websocket_update >= 0.1) or (current_sector != self.current_active_sector)
+                
+                if should_update and hasattr(self, 'event_loop'):
+                    last_websocket_update = current_time
                     data_to_send = {
-                        "sector": sector,
-                        "timestamp": time.time()
+                        "sector": current_sector,
+                        "timestamp": current_time
                     }
-                    # Используем asyncio для отправки данных
-                    if hasattr(self, 'event_loop'):
-                        asyncio.run_coroutine_threadsafe(
+                    
+                    try:
+                        # Используем asyncio для отправки данных через WebSocket
+                        future = asyncio.run_coroutine_threadsafe(
                             send_to_clients(data_to_send),
                             self.event_loop
                         )
-                    else:
-                        print("Ошибка: event_loop не доступен для отправки данных")
-                    
-                    for port, pred in predictions.items():
-                        status = "ДРОН ОБНАРУЖЕН!" if pred['class'] == 'class1' else "Фоновый шум"
-                        confidence = f"{pred['confidence']:.1%}".rjust(8)
-                        dBFS = f"{pred['dBFS']:+.1f} dBFS".rjust(12)
+                        # Дожидаемся выполнения с таймаутом 0.5 секунды
+                        future.result(timeout=0.5)
+                    except Exception as e:
+                        print(f"Ошибка отправки данных через WebSocket: {str(e)}")
                         
-                        color = "\033[92m" if pred['class'] == 'class1' else "\033[93m"
+                    # Выводим отладочную информацию об отправке
+                    print(f"WebSocket: отправка '({current_sector})' в {len(connected_clients)} соединений")
+                
+                # Очищаем строку и выводим статус для каждого порта
+                print("\033[4A", end='')  # Поднимаемся на 4 строки вверх
+                
+                for i, port in enumerate(PORTS):
+                    if port in predictions:
+                        pred = predictions[port]
+                        status = "ДРОН ОБНАРУЖЕН!" if OPERATING_MODE == "drone" and pred[0] == "class1" else \
+                                "ХЛОПОК ОБНАРУЖЕН!" if OPERATING_MODE == "clap" and pred[0] == "Class 2" else \
+                                "Фоновый шум"
+                        confidence = f"{pred[1]:.1%}".rjust(8)
+                        dBFS = f"{pred[2]:+.1f} dBFS".rjust(12)
+                        
+                        color = "\033[92m" if (OPERATING_MODE == "drone" and pred[0] == "class1") or \
+                                             (OPERATING_MODE == "clap" and pred[0] == "Class 2") else "\033[93m"
                         reset = "\033[0m"
                         
-                        print(f"Порт {port}:")
-                        print(f"{color}├─ Статус: {status}{reset}")
-                        print(f"├─ Уровень достоверности: {confidence}")
-                        print(f"└─ Уровень звука:    {dBFS}")
-                    print("="*60)
+                        buffer_size = len(self.audio_buffers[port])
+                        
+                        print(f"{port:<8} {i+1:<12} {color}{status:<20}{reset} {confidence:<10} {dBFS:<12} {buffer_size:<10}")
+                    else:
+                        print(f"{port:<8} {i+1:<12} {'Нет данных':<20} {'':<10} {'':<12} {0:<10}")
                 
-                time.sleep(1)
+                # Выводим информацию о текущем секторе
+                print(f"Текущий сектор: {current_sector}")
                 
-            except KeyboardInterrupt:
-                self.running = False
+                # Пауза между обработками
+                time.sleep(0.1)
+                
             except Exception as e:
-                print(f"Ошибка обработки: {str(e)}")
+                print(f"\nОшибка в процессе обработки аудио: {str(e)}")
+                time.sleep(1)  # Пауза при ошибке
+                
+        print("\nПрерывание процесса обработки аудио.")
 
     def determine_sector(self):
-        """Определение сектора по предсказаниям"""
+        """Определение сектора обнаружения на основе уровней сигнала с разных микрофонов"""
+        required_devices = PORTS
+        
+        # Получаем последние предсказания
         predictions = self.last_predictions
-        required_devices = [1, 2, 3, 4]
-
-        for dev_id in required_devices:
-            if dev_id not in predictions:
-                return "Не определено (недостаточно данных)"
-
+        
+        # Проверяем наличие всех необходимых устройств
+        if not all(dev_id in predictions for dev_id in required_devices):
+            return "Не хватает данных с микрофонов"
+        
+        # Проверка наличия ошибок в данных
         device_classes = {}
+        
+        activated_devices = []  # Список портов, на которых обнаружен целевой звук
+        
+        # ОТЛАДКА: Выводим сравнение уровней сигнала по всем микрофонам
+        print("\n--- ОТЛАДКА УРОВНЕЙ СИГНАЛА ---")
+        for port in PORTS:
+            if port in predictions:
+                dBFS = predictions[port][2]
+                print(f"Микрофон {port}: {dBFS:.1f} dBFS")
+        
         for dev_id in required_devices:
             pred = predictions[dev_id]
-            if pred['class'] == 'error':
+            if pred[0] == "error":
                 return "Ошибка в данных устройства"
             
-            try:
-                class_num = int(pred['class'].replace('class', ''))
-                device_classes[dev_id] = class_num
-            except:
-                return f"Ошибка класса: {pred['class']}"
+            # Для режима дрона
+            if OPERATING_MODE == "drone":
+                try:
+                    # Класс "class1" - дрон
+                    is_target = (pred[0] == "class1")
+                    device_classes[dev_id] = 1 if is_target else 2
+                    if is_target:
+                        activated_devices.append(dev_id)
+                except:
+                    return f"Ошибка класса: {pred[0]}"
+            # Для режима хлопков
+            else:
+                try:
+                    # Проверяем класс хлопка и уровень громкости
+                    # Class 2 - хлопок, проверяем что уверенность выше 30%
+                    is_target = (pred[0] == "Class 2" and pred[1] > 0.3)
+                    # Также учитываем громкость звука, теперь с порогом -21 dBFS
+                    sound_is_loud = (pred[2] > -21)  # Если громкость выше -21 dBFS
+                    
+                    # Для определения сектора нужен либо высокий уровень уверенности, либо громкий звук
+                    is_activated = (is_target or sound_is_loud)
+                    device_classes[dev_id] = 1 if is_activated else 2
+                    
+                    # Добавляем в список активированных устройств
+                    if is_activated:
+                        activated_devices.append(dev_id)
+                        print(f"Порт {dev_id}: Обнаружен целевой звук - уверенность: {pred[1]:.1%}, громкость: {pred[2]:.1f} dBFS")
+                    
+                except:
+                    return f"Ошибка класса: {pred[0]}"
 
-        conditions = [
-            (device_classes[1] == 1 and device_classes[2] == 1 and 
-             device_classes[4] == 1 and device_classes[3] == 2, "СВЕРХУ-СЛЕВА"),
-            (device_classes[1] == 1 and device_classes[2] == 1 and 
-             device_classes[3] == 1 and device_classes[4] == 2, "СВЕРХУ-СПРАВА"),
-            (device_classes[1] == 1 and device_classes[3] == 1 and 
-             device_classes[4] == 1 and device_classes[2] == 2, "СНИЗУ"),
-            (device_classes[2] == 1 and device_classes[3] == 1 and 
-             device_classes[4] == 1 and device_classes[1] == 2, "Ошибка конфигурации"),
-            (device_classes[2] == 2 and device_classes[3] == 2 and 
-             device_classes[4] == 2 and device_classes[1] == 1, "Ошибка конфигурации")
-        ]
-
-        for condition, sector in conditions:
-            if condition:
-                return sector
-
-        if all(cls == 1 for cls in device_classes.values()):
-            sound_levels = {dev_id: predictions[dev_id]['dBFS'] for dev_id in required_devices}
-            max_device = max(sound_levels, key=lambda k: sound_levels[k])
-            remaining_devices = sorted([d for d in required_devices if d != max_device])
+        # Условия для разных секторов
+        # Проверяем, есть ли вообще целевой звук
+        if all(cls == 2 for cls in device_classes.values()) or not activated_devices:
+            # Проверяем, не прошло ли 1 секунда с момента последнего обнаружения
+            current_time = time.time()
+            if current_time - self.last_detection_time > 1.0 and self.current_active_sector != "Не определен":
+                print(f"Сектор сброшен - прошло {current_time - self.last_detection_time:.1f} сек с момента последнего обнаружения")
+                self.current_active_sector = "Не определен"
+                
+                # Отправляем сообщение о сбросе сектора на фронтенд
+                if hasattr(self, 'event_loop'):
+                    try:
+                        # Создаем и отправляем сообщение о сбросе
+                        reset_data = {"sector": "Не определен", "timestamp": current_time}
+                        future = asyncio.run_coroutine_threadsafe(
+                            send_to_clients(reset_data),
+                            self.event_loop
+                        )
+                        # Дожидаемся выполнения с таймаутом 0.5 секунды
+                        future.result(timeout=0.5)
+                        print("WebSocket: отправлено сообщение о сбросе сектора")
+                    except Exception as e:
+                        print(f"Ошибка при отправке сообщения о сбросе сектора: {str(e)}")
+                        
+            return self.current_active_sector  # Возвращаем текущий активный сектор
             
-            combination = ''.join(map(str, remaining_devices))
-            sectors = {
-                '123': "СВЕРХУ-СПРАВА",
-                '134': "СНИЗУ",
-                '124': "СВЕРХУ-СЛЕВА",
-                '234': "ОШИБКА КОНФИГУРАЦИИ"
-            }
+        # Создаем словарь уровней звука только для активированных устройств
+        active_sound_levels = {dev_id: predictions[dev_id][2] for dev_id in activated_devices}
+        print(f"Активные порты и их уровни: {active_sound_levels}")
             
-            return sectors.get(combination, f"Неизвестная комбинация: {combination}")
+        # Находим микрофон с максимальным уровнем звука среди активированных
+        if active_sound_levels:
+            max_device = max(active_sound_levels, key=lambda k: active_sound_levels[k])
+            print(f"Выбран порт {max_device} с уровнем {active_sound_levels[max_device]:.1f} dBFS")
+            
+            # ОТЛАДКА: Проверяем разницу между уровнями микрофонов
+            max_level = active_sound_levels[max_device]
+            print("\n--- ОТЛАДКА РАЗНИЦЫ УРОВНЕЙ ---")
+            for port, level in active_sound_levels.items():
+                diff = max_level - level
+                print(f"Порт {port}: разница с максимальным {diff:.1f} дБ")
+            
+            # Если разница между уровнями микрофонов меньше 2 дБ, считаем их равными
+            # и выбираем сектор на основе количества активированных микрофонов
+            similar_devices = [port for port, level in active_sound_levels.items() 
+                               if (max_level - level) < 2.0]
+            
+            if len(similar_devices) > 1:
+                print(f"Обнаружено несколько микрофонов с похожими уровнями: {similar_devices}")
+                
+                # Если активны и верхние, и нижние микрофоны с похожими уровнями,
+                # выбираем сектор по расположению
+                upper_mics = [port for port in similar_devices if port in [5000, 5001]]
+                lower_mics = [port for port in similar_devices if port in [5002, 5003]]
+                
+                if upper_mics and lower_mics:
+                    print("Активны и верхние, и нижние микрофоны - выбираем на основе среднего уровня")
+                    
+                    avg_upper = sum(active_sound_levels[port] for port in upper_mics) / len(upper_mics)
+                    avg_lower = sum(active_sound_levels[port] for port in lower_mics) / len(lower_mics)
+                    
+                    print(f"Средний уровень верхних: {avg_upper:.1f} дБ, нижних: {avg_lower:.1f} дБ")
+                    
+                    if avg_upper > avg_lower:
+                        max_device = upper_mics[0]  # Берем первый из верхних
+                        print(f"Выбираем верхние микрофоны, новый порт: {max_device}")
+                    else:
+                        max_device = lower_mics[0]  # Берем первый из нижних
+                        print(f"Выбираем нижние микрофоны, новый порт: {max_device}")
+        else:
+            # Если нет активированных устройств, сохраняем текущий сектор
+            return self.current_active_sector
+        
+        # Определяем новый сектор - используем такие же названия, как и раньше для совместимости с фронтендом
+        if max_device == 5000:  # Микрофон 1
+            new_sector = "СВЕРХУ-СЛЕВА"  # Именно так ожидает фронтенд - с дефисом!
+        elif max_device == 5001:  # Микрофон 2
+            new_sector = "СВЕРХУ-СПРАВА"  # Именно так ожидает фронтенд - с дефисом!
+        elif max_device == 5002 or max_device == 5003:  # Микрофоны 3 и 4
+            new_sector = "СНИЗУ"  # Именно так ожидает фронтенд - без направления!
+        else:
+            new_sector = "Не определен"
+            
+        print(f"Определен новый сектор: {new_sector}")
+            
+        # Обновляем время последнего обнаружения и сектор
+        self.last_detection_time = time.time()
+        self.current_active_sector = new_sector
+            
+        return new_sector
 
-        return "Неопределенный сектор"
+# Обработка аргументов командной строки
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Система обнаружения звуков с нейронной сетью')
+    parser.add_argument('--mode', type=str, choices=['drone', 'clap'], default='drone',
+                        help='Режим работы: drone - обнаружение дронов, clap - демо-режим с хлопками')
+    return parser.parse_args()
 
+# Главная функция
 if __name__ == "__main__":
-    classifier = SoundClassifier()
+    # Парсинг аргументов
+    args = parse_arguments()
     
-    # Запуск сетевых потоков
-    listeners = []
-    for port in PORTS:
-        thread = threading.Thread(
-            target=classifier.network_listener,
-            args=(port,),
-            daemon=True
-        )
-        thread.start()
-        listeners.append(thread)
+    # Выбор режима работы
+    if args.mode == 'clap':
+        print("\n" + "="*60)
+        print("ЗАПУСК В ДЕМО-РЕЖИМЕ С РАСПОЗНАВАНИЕМ ХЛОПКОВ")
+        print("="*60 + "\n")
+        
+        # Проверка наличия файлов модели
+        tflite_path = find_model_file(TFLITE_MODEL_PATH)
+        labels_path = find_model_file(LABELS_PATH)
+        
+        if not tflite_path or not labels_path:
+            print("\nВНИМАНИЕ: Не все необходимые файлы найдены для демо-режима.")
+            print("Пожалуйста, запустите скрипт copy_model_files.bat для автоматического копирования файлов")
+            print("или вручную скопируйте файлы soundclassifier_with_metadata.tflite и labels.txt")
+            print("в директорию с программой.")
+            print("\nПереключение на стандартный режим обнаружения дронов...")
+            args.mode = 'drone'
+    else:
+        print("\n" + "="*60)
+        print("ЗАПУСК В РЕЖИМЕ ОБНАРУЖЕНИЯ ДРОНОВ")
+        print("="*60 + "\n")
     
-    # Основной цикл обработки
+    # Создание и запуск классификатора
+    classifier = SoundClassifier(mode=args.mode)
+    
     try:
-        classifier.process_audio()
+        # Просто ждем, пока потоки работают
+        while classifier.running:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nПрограмма остановлена пользователем")
     finally:
-        print("\nОстановка сервера...")
+        # Корректное завершение
+        classifier.running = False
+        print("Закрытие сокетов...")
         for sock in classifier.sockets.values():
-            sock.close()
-        print("Сервер успешно остановлен.")
+            try:
+                sock.close()
+            except:
+                pass
+        print("Выход из программы")
