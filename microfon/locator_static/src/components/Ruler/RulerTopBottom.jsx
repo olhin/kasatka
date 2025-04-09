@@ -234,26 +234,8 @@ const RulerTopBottom = (props) => {
                 <div className={`${classes.tickTop} ${classes.left113}`}></div>
                 <div className={`${classes.tickTop} ${classes.left113_5}`}></div>
                 <div className={`${classes.tickTop} ${classes.left114}`}></div>
-                <div className={`${classes.tickTopLarge} ${classes.left109_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left115}`}></div>
-                <div className={`${classes.tickTop} ${classes.left115_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left116}`}></div>
-                <div className={`${classes.tickTop} ${classes.left116_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left117}`}></div>
-                <div className={`${classes.tickTop} ${classes.left117_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left118}`}></div>
-                <div className={`${classes.tickTop} ${classes.left118_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left119}`}></div>
-                <div className={`${classes.tickTopLarge} ${classes.left109_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left120}`}></div>
-                <div className={`${classes.tickTop} ${classes.left120_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left121}`}></div>
-                <div className={`${classes.tickTop} ${classes.left121_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left122}`}></div>
-                <div className={`${classes.tickTop} ${classes.left122_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left123}`}></div>
-                <div className={`${classes.tickTop} ${classes.left123_5}`}></div>
-                <div className={`${classes.tickTop} ${classes.left124}`}></div>          
+                
+                         
             </div>
 
 
@@ -457,8 +439,36 @@ const RulerTopBottom = (props) => {
                 <div className={`${classes.tickBottom} ${classes.left98}`}></div>
                 <div className={`${classes.tickBottom} ${classes.left98_5}`}></div>
                 <div className={`${classes.tickBottom} ${classes.left99}`}></div>
-                <div className={`${classes.tickBottom} ${classes.left99_5}`}></div>
+                <div className={`${classes.tickBottomLarge} ${classes.left99_5}`}></div>
                 <div className={`${classes.tickBottom} ${classes.left100}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left100_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left101}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left101_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left102}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left102_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left103}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left103_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left104}`}></div>
+                <div className={`${classes.tickBottomLarge} ${classes.left104_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left105}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left105_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left106}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left106_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left107}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left107_5}`}></div>    
+                <div className={`${classes.tickBottom} ${classes.left108}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left108_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left109}`}></div>
+                <div className={`${classes.tickBottomLarge} ${classes.left109_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left110}`}></div>  
+                <div className={`${classes.tickBottom} ${classes.left110_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left111}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left111_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left112}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left112_5}`}></div>    
+                <div className={`${classes.tickBottom} ${classes.left113}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left113_5}`}></div>
+                <div className={`${classes.tickBottom} ${classes.left114}`}></div>
             </div>
 
         </div>
