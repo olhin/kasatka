@@ -13,6 +13,45 @@ import asyncio
 import websockets
 import json
 import argparse
+import cv2
+import torch.nn.functional as F
+
+# Определение класса CNN
+class CNN(nn.Module):
+    def __init__(self, num_classes):
+        super(CNN, self).__init__()
+        
+        # Сверточные слои
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        
+        # Пулинг
+        self.pool = nn.MaxPool2d(2, 2)
+        
+        # Полносвязные слои
+        self.fc1 = nn.Linear(128 * 16 * 16, 512)
+        self.dropout = nn.Dropout(DROPOUT_RATE)
+        self.fc2 = nn.Linear(512, num_classes)
+        
+    def forward(self, x):
+        # Сверточные слои с активацией и пулингом
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
+        
+        # Выравнивание для полносвязных слоев
+        x = x.view(-1, 128 * 16 * 16)
+        
+        # Полносвязные слои
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        
+        return x
 
 # Импорт TensorFlow вместо tflite_runtime
 try:
@@ -52,6 +91,13 @@ LABELS_PATH = 'labels.txt'
 BUFFER_SIZE = 44100 * 2  # 2 секунды аудио
 MAX_PACKET_SIZE = 4096
 DROPOUT_RATE = 0.6
+
+# Параметры для спектрограмм
+N_FFT = 2048
+HOP_LENGTH = 512
+N_MELS = 128
+SPECTROGRAM_SIZE = (128, 128)  # Размер спектрограммы (высота, ширина)
+
 DATA_DIRS = {
     'train': 'train',
     'valid': 'valid',
@@ -196,7 +242,6 @@ class SoundClassifier:
             print(f"Ошибка при загрузке TensorFlow модели: {str(e)}")
             return False
 
-    # 🔄 Существующий метод save_model
     def save_model(self):
         """Сохранение модели на диск"""
         try:
@@ -204,7 +249,6 @@ class SoundClassifier:
                 'model_state_dict': self.model.state_dict(),
                 'le_classes': self.le.classes_,
                 'sample_rates': self.sample_rates,
-                'input_size': N_MFCC,
                 'num_classes': len(self.le.classes_)
             }, MODEL_PATH)
             print(f"Модель сохранена в {MODEL_PATH}")
@@ -225,21 +269,8 @@ class SoundClassifier:
                 self.sample_rates = checkpoint.get('sample_rates', {})
                 
                 # Создаем модель с правильной архитектурой
-                input_size = checkpoint['input_size']
-                hidden_size = 256  # Используем 256 нейронов в скрытом слое
                 num_classes = checkpoint['num_classes']
-                
-                self.model = nn.Sequential(
-                    nn.Linear(input_size, hidden_size),
-                    nn.BatchNorm1d(hidden_size),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(hidden_size, hidden_size // 2),
-                    nn.BatchNorm1d(hidden_size // 2),
-                    nn.ReLU(),
-                    nn.Dropout(DROPOUT_RATE),
-                    nn.Linear(hidden_size // 2, num_classes)
-                )
+                self.model = CNN(num_classes)
                 
                 # Загружаем веса
                 self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -260,7 +291,7 @@ class SoundClassifier:
         try:
             self.load_data()
             self.create_model()
-            self.train(num_epochs=3000)  # Увеличиваем количество эпох до 3000
+            self.train(num_epochs=5)  # Уменьшаем количество эпох до 5
             self.save_model()
             print("\nОбучение успешно завершено!\n")
             self.load_model()
@@ -301,21 +332,46 @@ class SoundClassifier:
                             file_path = os.path.join(label_dir, file)
                             file_count += 1
                             
+                            # Загрузка аудио
                             audio, sr = librosa.load(file_path, sr=None, mono=True)
                             if sr != TARGET_SAMPLE_RATE:
                                 audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SAMPLE_RATE)
-                                
-                            with warnings.catch_warnings():
-                                warnings.simplefilter("ignore")
-                                mfcc = librosa.feature.mfcc(
-                                    y=audio,
-                                    sr=TARGET_SAMPLE_RATE,
-                                    n_mfcc=N_MFCC,
-                                    n_fft=2048,
-                                    hop_length=512
-                                )
-                                
-                            X.append(np.mean(mfcc.T, axis=0))
+                            
+                            # Создание спектрограммы
+                            mel_spec = librosa.feature.melspectrogram(
+                                y=audio,
+                                sr=TARGET_SAMPLE_RATE,
+                                n_fft=N_FFT,
+                                hop_length=HOP_LENGTH,
+                                n_mels=N_MELS
+                            )
+                            
+                            # Преобразование в децибелы
+                            mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+                            
+                            # Замена NaN и inf на 0
+                            mel_spec_db = np.nan_to_num(mel_spec_db, nan=0.0, posinf=0.0, neginf=0.0)
+                            
+                            # Нормализация в диапазон [0, 1]
+                            min_val = np.min(mel_spec_db)
+                            max_val = np.max(mel_spec_db)
+                            if max_val > min_val:  # Избегаем деления на ноль
+                                mel_spec_db = (mel_spec_db - min_val) / (max_val - min_val)
+                            else:
+                                mel_spec_db = np.zeros_like(mel_spec_db)
+                            
+                            # Изменение размера до SPECTROGRAM_SIZE
+                            mel_spec_db = cv2.resize(mel_spec_db, SPECTROGRAM_SIZE)
+                            
+                            # Проверка на NaN после всех преобразований
+                            if np.isnan(mel_spec_db).any():
+                                print(f"Предупреждение: NaN обнаружены в {file_path} после обработки")
+                                continue
+                            
+                            # Добавление размерности канала
+                            mel_spec_db = np.expand_dims(mel_spec_db, axis=0)
+                            
+                            X.append(mel_spec_db)
                             y.append(label)
                             
                             if file_count % 10 == 0:
@@ -356,6 +412,19 @@ class SoundClassifier:
             self.X_test, self.y_test = load_from_dir(self.test_dir)
             self.y_encoded_test = self.le.transform(self.y_test)
             
+            # Проверка на NaN в загруженных данных
+            if np.isnan(self.X).any():
+                print("Предупреждение: NaN обнаружены в тренировочных данных")
+                self.X = np.nan_to_num(self.X, nan=0.0)
+            
+            if np.isnan(self.X_valid).any():
+                print("Предупреждение: NaN обнаружены в валидационных данных")
+                self.X_valid = np.nan_to_num(self.X_valid, nan=0.0)
+            
+            if np.isnan(self.X_test).any():
+                print("Предупреждение: NaN обнаружены в тестовых данных")
+                self.X_test = np.nan_to_num(self.X_test, nan=0.0)
+            
             print("\nСтатистика датасета:")
             self._print_dataset_stats("Тренировочные", self.y)
             self._print_dataset_stats("Валидационные", self.y_valid)
@@ -379,83 +448,173 @@ class SoundClassifier:
         print(f"Всего: {len(labels)} примеров\n")
 
     def create_model(self):
-        """Создание модели нейронной сети"""
-        input_size = 40  # Размер входного вектора признаков (MFCC)
-        hidden_size = 256  # Размер скрытого слоя
-        num_classes = 2  # Количество классов (дрон/фон)
-        
-        self.model = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU(),
-            nn.Dropout(DROPOUT_RATE),
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.BatchNorm1d(hidden_size // 2),
-            nn.ReLU(),
-            nn.Dropout(DROPOUT_RATE),
-            nn.Linear(hidden_size // 2, num_classes)
-        )
+        """Создание сверточной нейронной сети"""
+        # Создаем модель
+        num_classes = len(self.le.classes_)
+        self.model = CNN(num_classes)
         
         # Инициализация весов
         for m in self.model.modules():
-            if isinstance(m, nn.Linear):
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight)
                 nn.init.zeros_(m.bias)
         
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
 
-    def train(self, num_epochs=250):
-        X_tensor = torch.tensor(self.X, dtype=torch.float32)
-        y_tensor = torch.tensor(self.y_encoded, dtype=torch.long)
-    
+    def train(self, num_epochs=5):  # Уменьшаем до 5 эпох
+        # Устанавливаем размер батча
+        batch_size = 8  # Уменьшаем размер батча
+        
+        # Создаем DataLoader для тренировочных данных
+        train_dataset = torch.utils.data.TensorDataset(
+            torch.tensor(self.X, dtype=torch.float32),
+            torch.tensor(self.y_encoded, dtype=torch.long)
+        )
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0
+        )
+        
+        # Создаем DataLoader для валидационных данных
+        valid_dataset = torch.utils.data.TensorDataset(
+            torch.tensor(self.X_valid, dtype=torch.float32),
+            torch.tensor(self.y_encoded_valid, dtype=torch.long)
+        )
+        valid_loader = torch.utils.data.DataLoader(
+            valid_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0
+        )
+        
         train_losses = []
         valid_losses = []
         train_accuracies = []
         valid_accuracies = []
         learning_rates = []
-    
+        
+        # Очищаем кэш CUDA если доступен
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         try:
             for epoch in range(num_epochs):
                 if not self.running:
                     raise KeyboardInterrupt
                 
-            # Обучение
+                # Обучение
                 self.model.train()
-                self.optimizer.zero_grad()
-                outputs = self.model(X_tensor)
-                loss = self.criterion(outputs, y_tensor)
-                loss.backward()
-                self.optimizer.step()
-            
-            # Расчет точности тренировки
-                _, preds = torch.max(outputs, 1)
-                correct = (preds == y_tensor).sum().item()
-                train_accuracy = correct / len(y_tensor) * 100
-            
-                train_losses.append(loss.item())
+                epoch_train_loss = 0
+                epoch_train_correct = 0
+                epoch_train_total = 0
+                
+                for batch_idx, (data, target) in enumerate(train_loader):
+                    self.optimizer.zero_grad()
+                    
+                    # Очищаем кэш каждые 5 батчей
+                    if batch_idx % 5 == 0 and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    # Проверяем на NaN перед forward pass
+                    if torch.isnan(data).any():
+                        print(f"Обнаружены NaN в данных на батче {batch_idx}")
+                        continue
+                    
+                    outputs = self.model(data)
+                    
+                    # Проверяем на NaN после forward pass
+                    if torch.isnan(outputs).any():
+                        print(f"Обнаружены NaN в выходных данных на батче {batch_idx}")
+                        continue
+                    
+                    loss = self.criterion(outputs, target)
+                    
+                    # Проверяем на NaN в loss
+                    if torch.isnan(loss):
+                        print(f"Обнаружены NaN в loss на батче {batch_idx}")
+                        continue
+                    
+                    loss.backward()
+                    
+                    # Обрезаем градиенты для предотвращения взрыва градиентов
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    self.optimizer.step()
+                    
+                    epoch_train_loss += loss.item()
+                    _, predicted = torch.max(outputs.data, 1)
+                    epoch_train_total += target.size(0)
+                    epoch_train_correct += (predicted == target).sum().item()
+                    
+                    # Очищаем память
+                    del outputs, loss
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
+                # Расчет средней потери и точности для эпохи
+                if epoch_train_total > 0:
+                    avg_train_loss = epoch_train_loss / len(train_loader)
+                    train_accuracy = 100 * epoch_train_correct / epoch_train_total
+                else:
+                    avg_train_loss = float('inf')
+                    train_accuracy = 0.0
+                
+                train_losses.append(avg_train_loss)
                 train_accuracies.append(train_accuracy)
-            
-            # Валидация
+                
+                # Валидация
                 self.model.eval()
+                epoch_valid_loss = 0
+                epoch_valid_correct = 0
+                epoch_valid_total = 0
+                
                 with torch.no_grad():
-                    valid_outputs = self.model(torch.tensor(self.X_valid, dtype=torch.float32))
-                    valid_loss = self.criterion(valid_outputs, torch.tensor(self.y_encoded_valid, dtype=torch.long))
+                    for data, target in valid_loader:
+                        # Проверяем на NaN в валидационных данных
+                        if torch.isnan(data).any():
+                            print("Обнаружены NaN в валидационных данных")
+                            continue
+                        
+                        outputs = self.model(data)
+                        loss = self.criterion(outputs, target)
+                        
+                        epoch_valid_loss += loss.item()
+                        _, predicted = torch.max(outputs.data, 1)
+                        epoch_valid_total += target.size(0)
+                        epoch_valid_correct += (predicted == target).sum().item()
+                        
+                        # Очищаем память
+                        del outputs, loss
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
                 
-                # Расчет точности валидации
-                    _, valid_preds = torch.max(valid_outputs, 1)
-                    valid_correct = (valid_preds == torch.tensor(self.y_encoded_valid, dtype=torch.long)).sum().item()
-                    valid_accuracy = valid_correct / len(self.y_encoded_valid) * 100
+                # Расчет средней потери и точности для валидации
+                if epoch_valid_total > 0:
+                    avg_valid_loss = epoch_valid_loss / len(valid_loader)
+                    valid_accuracy = 100 * epoch_valid_correct / epoch_valid_total
+                else:
+                    avg_valid_loss = float('inf')
+                    valid_accuracy = 0.0
                 
-                    valid_losses.append(valid_loss.item())
-                    valid_accuracies.append(valid_accuracy)
-            
+                valid_losses.append(avg_valid_loss)
+                valid_accuracies.append(valid_accuracy)
+                
                 learning_rates.append(self.optimizer.param_groups[0]['lr'])
-            
+                
                 print(f"Эпоха [{epoch+1}/{num_epochs}] | "
-                    f"Потеря: {loss.item():.4f} | Валидация: {valid_loss.item():.4f} | "
+                    f"Потеря: {avg_train_loss:.4f} | Валидация: {avg_valid_loss:.4f} | "
                     f"Точность: {train_accuracy:.2f}% | Валидационная точность: {valid_accuracy:.2f}%")
-
+                
+                # Очищаем память после каждой эпохи
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
         except KeyboardInterrupt:
             print("\nОбучение прервано пользователем")
             self.running = False
@@ -468,7 +627,6 @@ class SoundClassifier:
                 valid_accuracies,
                 learning_rates
             )
-
 
     def analyze_training(self, train_losses, valid_losses, train_accuracies, valid_accuracies, learning_rates):
         print("\n" + "="*60)
@@ -661,18 +819,49 @@ class SoundClassifier:
             return self._predict_clap(audio)
             
     def _predict_drone(self, audio):
-        """Классификация звука дрона с использованием PyTorch модели"""
+        """Классификация звука дрона с использованием CNN и спектрограмм"""
         # Проверка длины аудио
         if len(audio) < TARGET_SAMPLE_RATE:
             return "Фоновый шум", 0.0  # Недостаточно данных
             
         try:
-            # Извлечение MFCC признаков
-            mfccs = librosa.feature.mfcc(y=audio, sr=TARGET_SAMPLE_RATE, n_mfcc=N_MFCC)
-            mfccs_processed = np.mean(mfccs.T, axis=0)
+            # Создание спектрограммы
+            mel_spec = librosa.feature.melspectrogram(
+                y=audio,
+                sr=TARGET_SAMPLE_RATE,
+                n_fft=N_FFT,
+                hop_length=HOP_LENGTH,
+                n_mels=N_MELS
+            )
+            
+            # Преобразование в децибелы
+            mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+            
+            # Замена NaN и inf на 0
+            mel_spec_db = np.nan_to_num(mel_spec_db, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Нормализация в диапазон [0, 1]
+            min_val = np.min(mel_spec_db)
+            max_val = np.max(mel_spec_db)
+            if max_val > min_val:  # Избегаем деления на ноль
+                mel_spec_db = (mel_spec_db - min_val) / (max_val - min_val)
+            else:
+                mel_spec_db = np.zeros_like(mel_spec_db)
+            
+            # Изменение размера до SPECTROGRAM_SIZE
+            mel_spec_db = cv2.resize(mel_spec_db, SPECTROGRAM_SIZE)
+            
+            # Проверка на NaN после всех преобразований
+            if np.isnan(mel_spec_db).any():
+                print("Предупреждение: NaN обнаружены в спектрограмме")
+                return "Фоновый шум", 0.0
+            
+            # Добавление размерности канала и батча
+            mel_spec_db = np.expand_dims(mel_spec_db, axis=0)  # Добавляем канал
+            mel_spec_db = np.expand_dims(mel_spec_db, axis=0)  # Добавляем батч
             
             # Преобразование в тензор PyTorch
-            features = torch.tensor(mfccs_processed, dtype=torch.float32).unsqueeze(0)
+            features = torch.tensor(mel_spec_db, dtype=torch.float32)
             
             # Получение предсказания
             with torch.no_grad():
@@ -688,7 +877,7 @@ class SoundClassifier:
             return class_name, confidence
             
         except Exception as e:
-            print(f"Ошибка предсказания (PyTorch): {str(e)}")
+            print(f"Ошибка предсказания (CNN): {str(e)}")
             return "Ошибка", 0.0
             
     def _predict_clap(self, audio):
@@ -747,13 +936,13 @@ class SoundClassifier:
 
     def process_audio(self):
         """Основной цикл обработки аудио"""
-        print("Запуск обработки аудио...")
+        print("\n=== ЗАПУСК СИСТЕМЫ ОБНАРУЖЕНИЯ ДРОНОВ ===")
         
         # Вывод заголовка таблицы статуса
-        print("\n" + "-"*82)
-        print(f"{'Порт':<8} {'Устройство':<12} {'Статус':<20} {'Уверенность':<10} {'Уровень':<12} {'Буфер':<10}")
-        print("-"*82)
-        print("\n" * 4)  # Добавляем пустые строки для начального вывода
+        print("\n" + "="*100)
+        print(f"{'Микрофон':<12} {'Порт':<8} {'Статус':<20} {'Уверенность':<12} {'Уровень звука':<15} {'Размер буфера':<15}")
+        print("="*100)
+        print("\n" * 5)  # Добавляем пустые строки для начального вывода
             
         # Последнее время отправки данных на фронтенд
         last_websocket_update = 0
@@ -773,36 +962,37 @@ class SoundClassifier:
                 
                 with self.lock:
                     for port, buffer in self.audio_buffers.items():
-                        current_buffers[port] = buffer.copy() if len(buffer) > 0 else np.array([], dtype=np.float32)
+                        if len(buffer) > 0:
+                            if np.isnan(buffer).any() or np.isinf(buffer).any():
+                                print(f"⚠️ Некорректные значения в буфере порта {port}")
+                                buffer = np.nan_to_num(buffer, nan=0.0, posinf=0.0, neginf=0.0)
+                            current_buffers[port] = buffer.copy()
+                        else:
+                            current_buffers[port] = np.array([], dtype=np.float32)
                 
                 # Обрабатываем каждый буфер отдельно
                 predictions = {}
                 
                 for port, buffer in current_buffers.items():
                     if len(buffer) == 0:
-                        # Если буфер пуст, используем предыдущее предсказание или "молчание"
                         predictions[port] = self.last_predictions.get(port, ("Фоновый шум", 0.0, -np.inf))
                         continue
                     
-                    # Для каждого порта делаем предсказание
                     class_name, confidence = self.predict(buffer)
                     
-                    # Вычисляем уровень звука в дБ
                     if len(buffer) > 0:
                         rms = np.sqrt(np.mean(buffer**2))
                         dBFS = 20 * np.log10(rms) if rms > 0 else -np.inf
                     else:
                         dBFS = -np.inf
                     
-                    # Сохраняем предсказание и уровень
                     predictions[port] = (class_name, confidence, dBFS)
                     self.last_predictions[port] = predictions[port]
                 
                 # Определяем текущий активный сектор
                 current_sector = self.determine_sector()
                 
-                # Отправляем информацию о секторе через WebSocket
-                # Отправляем каждые 100 мс или при изменении сектора
+                # Отправляем информацию через WebSocket при необходимости
                 current_time = time.time()
                 should_update = (current_time - last_websocket_update >= 0.1) or (current_sector != self.current_active_sector)
                 
@@ -814,202 +1004,115 @@ class SoundClassifier:
                     }
                     
                     try:
-                        # Используем asyncio для отправки данных через WebSocket
                         future = asyncio.run_coroutine_threadsafe(
                             send_to_clients(data_to_send),
                             self.event_loop
                         )
-                        # Дожидаемся выполнения с таймаутом 0.5 секунды
                         future.result(timeout=0.5)
                     except Exception as e:
-                        print(f"Ошибка отправки данных через WebSocket: {str(e)}")
-                        
-                    # Выводим отладочную информацию об отправке
-                    print(f"WebSocket: отправка '({current_sector})' в {len(connected_clients)} соединений")
+                        print(f"⚠️ Ошибка WebSocket: {str(e)}")
                 
-                # Очищаем строку и выводим статус для каждого порта
-                print("\033[4A", end='')  # Поднимаемся на 4 строки вверх
+                # Очищаем предыдущий вывод
+                print("\033[5A", end='')  # Поднимаемся на 5 строк вверх
                 
-                for i, port in enumerate(PORTS):
+                # Выводим статус каждого микрофона
+                for i, port in enumerate(PORTS, 1):
                     if port in predictions:
                         pred = predictions[port]
-                        status = "ДРОН ОБНАРУЖЕН!" if OPERATING_MODE == "drone" and pred[0] == "class1" else \
-                                "ХЛОПОК ОБНАРУЖЕН!" if OPERATING_MODE == "clap" and pred[0] == "Class 2" else \
-                                "Фоновый шум"
-                        confidence = f"{pred[1]:.1%}".rjust(8)
-                        dBFS = f"{pred[2]:+.1f} dBFS".rjust(12)
+                        status = "🔴 ДРОН!" if OPERATING_MODE == "drone" and pred[0] == "class1" else \
+                                "🔔 ХЛОПОК!" if OPERATING_MODE == "clap" and pred[0] == "Class 2" else \
+                                "✓ Фоновый шум"
+                        confidence = f"{pred[1]*100:.1f}%".rjust(10)
+                        dBFS = f"{pred[2]:+.1f} dB".rjust(12)
                         
-                        color = "\033[92m" if (OPERATING_MODE == "drone" and pred[0] == "class1") or \
-                                             (OPERATING_MODE == "clap" and pred[0] == "Class 2") else "\033[93m"
+                        # Цветовое оформление
+                        if (OPERATING_MODE == "drone" and pred[0] == "class1") or \
+                           (OPERATING_MODE == "clap" and pred[0] == "Class 2"):
+                            color = "\033[91m"  # Красный для обнаружения
+                        elif pred[2] > -30:  # Если уровень звука выше -30 дБ
+                            color = "\033[93m"  # Желтый для заметного звука
+                        else:
+                            color = "\033[92m"  # Зеленый для фонового шума
                         reset = "\033[0m"
                         
                         buffer_size = len(self.audio_buffers[port])
-                        
-                        print(f"{port:<8} {i+1:<12} {color}{status:<20}{reset} {confidence:<10} {dBFS:<12} {buffer_size:<10}")
+                        print(f"{f'Микрофон {i}':<12} {port:<8} {color}{status:<20}{reset} {confidence:<12} {dBFS:<15} {buffer_size:<15}")
                     else:
-                        print(f"{port:<8} {i+1:<12} {'Нет данных':<20} {'':<10} {'':<12} {0:<10}")
+                        print(f"{f'Микрофон {i}':<12} {port:<8} {'⚠️ Нет данных':<20} {'':<12} {'':<15} {0:<15}")
                 
-                # Выводим информацию о текущем секторе
-                print(f"Текущий сектор: {current_sector}")
+                # Выводим информацию о секторе
+                sector_color = "\033[95m" if current_sector in ["СВЕРХУ-СПРАВА", "СНИЗУ", "СВЕРХУ-СЛЕВА"] else \
+                             "\033[91m" if current_sector == "ОШИБКА РАСПОЗНОВАНИЯ" else "\033[92m"
+                print(f"\n{sector_color}Определен сектор: {current_sector}{reset}")
                 
-                # Пауза между обработками
                 time.sleep(0.1)
                 
             except Exception as e:
-                print(f"\nОшибка в процессе обработки аудио: {str(e)}")
-                time.sleep(1)  # Пауза при ошибке
+                print(f"\n⚠️ Ошибка обработки: {str(e)}")
+                time.sleep(1)
                 
-        print("\nПрерывание процесса обработки аудио.")
+        print("\n❌ Прерывание обработки аудио.")
 
     def determine_sector(self):
         """Определение сектора обнаружения на основе уровней сигнала с разных микрофонов"""
-        required_devices = PORTS
+        # Словарь соответствия портов микрофонам
+        MICROPHONE_MAP = {
+            5000: "Микрофон 1",
+            5001: "Микрофон 2",
+            5002: "Микрофон 3",
+            5003: "Микрофон 4"
+        }
         
         # Получаем последние предсказания
         predictions = self.last_predictions
         
         # Проверяем наличие всех необходимых устройств
-        if not all(dev_id in predictions for dev_id in required_devices):
+        if not all(port in predictions for port in PORTS):
             return "Не хватает данных с микрофонов"
         
-        # Проверка наличия ошибок в данных
-        device_classes = {}
+        # Собираем информацию о распознанных дронах
+        detected_mics = []
+        sound_levels = {}
         
-        activated_devices = []  # Список портов, на которых обнаружен целевой звук
-        
-        # ОТЛАДКА: Выводим сравнение уровней сигнала по всем микрофонам
-        print("\n--- ОТЛАДКА УРОВНЕЙ СИГНАЛА ---")
         for port in PORTS:
-            if port in predictions:
-                dBFS = predictions[port][2]
-                print(f"Микрофон {port}: {dBFS:.1f} dBFS")
+            pred = predictions[port]
+            if pred[0] == "class1":  # Если обнаружен дрон
+                detected_mics.append(port)
+                sound_levels[port] = pred[2]  # Сохраняем уровень звука
         
-        for dev_id in required_devices:
-            pred = predictions[dev_id]
-            if pred[0] == "error":
-                return "Ошибка в данных устройства"
-            
-            # Для режима дрона
-            if OPERATING_MODE == "drone":
-                try:
-                    # Класс "class1" - дрон
-                    is_target = (pred[0] == "class1")
-                    device_classes[dev_id] = 1 if is_target else 2
-                    if is_target:
-                        activated_devices.append(dev_id)
-                except:
-                    return f"Ошибка класса: {pred[0]}"
-            # Для режима хлопков
-            else:
-                try:
-                    # Проверяем класс хлопка и уровень громкости
-                    # Class 2 - хлопок, проверяем что уверенность выше 30%
-                    is_target = (pred[0] == "Class 2" and pred[1] > 0.3)
-                    # Также учитываем громкость звука, теперь с порогом -21 dBFS
-                    sound_is_loud = (pred[2] > -21)  # Если громкость выше -21 dBFS
-                    
-                    # Для определения сектора нужен либо высокий уровень уверенности, либо громкий звук
-                    is_activated = (is_target or sound_is_loud)
-                    device_classes[dev_id] = 1 if is_activated else 2
-                    
-                    # Добавляем в список активированных устройств
-                    if is_activated:
-                        activated_devices.append(dev_id)
-                        print(f"Порт {dev_id}: Обнаружен целевой звук - уверенность: {pred[1]:.1%}, громкость: {pred[2]:.1f} dBFS")
-                    
-                except:
-                    return f"Ошибка класса: {pred[0]}"
-
-        # Условия для разных секторов
-        # Проверяем, есть ли вообще целевой звук
-        if all(cls == 2 for cls in device_classes.values()) or not activated_devices:
-            # Проверяем, не прошло ли 1 секунда с момента последнего обнаружения
-            current_time = time.time()
-            if current_time - self.last_detection_time > 1.0 and self.current_active_sector != "Не определен":
-                print(f"Сектор сброшен - прошло {current_time - self.last_detection_time:.1f} сек с момента последнего обнаружения")
-                self.current_active_sector = "Не определен"
-                
-                # Отправляем сообщение о сбросе сектора на фронтенд
-                if hasattr(self, 'event_loop'):
-                    try:
-                        # Создаем и отправляем сообщение о сбросе
-                        reset_data = {"sector": "Не определен", "timestamp": current_time}
-                        future = asyncio.run_coroutine_threadsafe(
-                            send_to_clients(reset_data),
-                            self.event_loop
-                        )
-                        # Дожидаемся выполнения с таймаутом 0.5 секунды
-                        future.result(timeout=0.5)
-                        print("WebSocket: отправлено сообщение о сбросе сектора")
-                    except Exception as e:
-                        print(f"Ошибка при отправке сообщения о сбросе сектора: {str(e)}")
-                        
-            return self.current_active_sector  # Возвращаем текущий активный сектор
-            
-        # Создаем словарь уровней звука только для активированных устройств
-        active_sound_levels = {dev_id: predictions[dev_id][2] for dev_id in activated_devices}
-        print(f"Активные порты и их уровни: {active_sound_levels}")
-            
-        # Находим микрофон с максимальным уровнем звука среди активированных
-        if active_sound_levels:
-            max_device = max(active_sound_levels, key=lambda k: active_sound_levels[k])
-            print(f"Выбран порт {max_device} с уровнем {active_sound_levels[max_device]:.1f} dBFS")
-            
-            # ОТЛАДКА: Проверяем разницу между уровнями микрофонов
-            max_level = active_sound_levels[max_device]
-            print("\n--- ОТЛАДКА РАЗНИЦЫ УРОВНЕЙ ---")
-            for port, level in active_sound_levels.items():
-                diff = max_level - level
-                print(f"Порт {port}: разница с максимальным {diff:.1f} дБ")
-            
-            # Если разница между уровнями микрофонов меньше 2 дБ, считаем их равными
-            # и выбираем сектор на основе количества активированных микрофонов
-            similar_devices = [port for port, level in active_sound_levels.items() 
-                               if (max_level - level) < 2.0]
-            
-            if len(similar_devices) > 1:
-                print(f"Обнаружено несколько микрофонов с похожими уровнями: {similar_devices}")
-                
-                # Если активны и верхние, и нижние микрофоны с похожими уровнями,
-                # выбираем сектор по расположению
-                upper_mics = [port for port in similar_devices if port in [5000, 5001]]
-                lower_mics = [port for port in similar_devices if port in [5002, 5003]]
-                
-                if upper_mics and lower_mics:
-                    print("Активны и верхние, и нижние микрофоны - выбираем на основе среднего уровня")
-                    
-                    avg_upper = sum(active_sound_levels[port] for port in upper_mics) / len(upper_mics)
-                    avg_lower = sum(active_sound_levels[port] for port in lower_mics) / len(lower_mics)
-                    
-                    print(f"Средний уровень верхних: {avg_upper:.1f} дБ, нижних: {avg_lower:.1f} дБ")
-                    
-                    if avg_upper > avg_lower:
-                        max_device = upper_mics[0]  # Берем первый из верхних
-                        print(f"Выбираем верхние микрофоны, новый порт: {max_device}")
-                    else:
-                        max_device = lower_mics[0]  # Берем первый из нижних
-                        print(f"Выбираем нижние микрофоны, новый порт: {max_device}")
-        else:
-            # Если нет активированных устройств, сохраняем текущий сектор
-            return self.current_active_sector
+        # Если не обнаружено ни одного дрона
+        if not detected_mics:
+            return "Фоновый шум"
         
-        # Определяем новый сектор - используем такие же названия, как и раньше для совместимости с фронтендом
-        if max_device == 5000:  # Микрофон 1
-            new_sector = "СВЕРХУ-СЛЕВА"  # Именно так ожидает фронтенд - с дефисом!
-        elif max_device == 5001:  # Микрофон 2
-            new_sector = "СВЕРХУ-СПРАВА"  # Именно так ожидает фронтенд - с дефисом!
-        elif max_device == 5002 or max_device == 5003:  # Микрофоны 3 и 4
-            new_sector = "СНИЗУ"  # Именно так ожидает фронтенд - без направления!
-        else:
-            new_sector = "Не определен"
-            
-        print(f"Определен новый сектор: {new_sector}")
-            
-        # Обновляем время последнего обнаружения и сектор
-        self.last_detection_time = time.time()
-        self.current_active_sector = new_sector
-            
-        return new_sector
+        # Если обнаружены все микрофоны
+        if len(detected_mics) == 4:
+            # Находим микрофон с минимальным уровнем звука
+            min_level_port = min(sound_levels, key=sound_levels.get)
+            # Удаляем его из списка
+            detected_mics.remove(min_level_port)
+            print(f"Исключен микрофон {MICROPHONE_MAP[min_level_port]} с уровнем {sound_levels[min_level_port]:.1f} дБ")
+        
+        # Если не обнаружен микрофон 1
+        if 5000 not in detected_mics:
+            return "ОШИБКА РАСПОЗНОВАНИЯ"
+        
+        # Определяем сектор на основе комбинации микрофонов
+        detected_mics_set = set(detected_mics)
+        
+        # СВЕРХУ-СПРАВА: микрофоны 1,2,3
+        if detected_mics_set == {5000, 5001, 5002}:
+            return "СВЕРХУ-СПРАВА"
+        
+        # СНИЗУ: микрофоны 1,3,4
+        if detected_mics_set == {5000, 5002, 5003}:
+            return "СНИЗУ"
+        
+        # СВЕРХУ-СЛЕВА: микрофоны 1,2,4
+        if detected_mics_set == {5000, 5001, 5003}:
+            return "СВЕРХУ-СЛЕВА"
+        
+        # Если комбинация не соответствует ни одному из известных секторов
+        return "ОШИБКА РАСПОЗНОВАНИЯ"
 
 # Обработка аргументов командной строки
 def parse_arguments():
