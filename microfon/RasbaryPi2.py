@@ -15,6 +15,46 @@ import json
 import argparse
 import cv2
 import torch.nn.functional as F
+import random
+
+# Функции аугментации данных
+def add_noise(audio, noise_level=0.005):
+    """Добавление случайного шума"""
+    noise = np.random.normal(0, noise_level, audio.shape)
+    return audio + noise
+
+def change_volume(audio, volume_range=(0.5, 1.5)):
+    """Изменение громкости"""
+    volume = random.uniform(*volume_range)
+    return audio * volume
+
+def time_shift(audio, sr, max_shift=0.1):
+    """Сдвиг по времени"""
+    shift = int(random.uniform(-max_shift, max_shift) * sr)
+    if shift > 0:
+        return np.pad(audio[shift:], (0, shift), mode='constant')
+    else:
+        return np.pad(audio[:shift], (-shift, 0), mode='constant')
+
+def pitch_shift(audio, sr, n_steps=(-2, 2)):
+    """Изменение частоты"""
+    steps = random.uniform(*n_steps)
+    return librosa.effects.pitch_shift(audio, sr=sr, n_steps=steps)
+
+def augment_audio(audio, sr):
+    """Применение случайной аугментации"""
+    aug_type = random.choice(['noise', 'volume', 'time_shift', 'pitch_shift'])
+    
+    if aug_type == 'noise':
+        return add_noise(audio)
+    elif aug_type == 'volume':
+        return change_volume(audio)
+    elif aug_type == 'time_shift':
+        return time_shift(audio, sr)
+    elif aug_type == 'pitch_shift':
+        return pitch_shift(audio, sr)
+    
+    return audio
 
 # Определение класса CNN
 class CNN(nn.Module):
@@ -32,19 +72,30 @@ class CNN(nn.Module):
         # Пулинг
         self.pool = nn.MaxPool2d(2, 2)
         
+        # Вычисляем размер после сверточных слоев
+        # 128 -> 64 -> 32 -> 16
+        self.fc_input_size = 128 * 16 * 16
+        
         # Полносвязные слои
-        self.fc1 = nn.Linear(128 * 16 * 16, 512)
+        self.fc1 = nn.Linear(self.fc_input_size, 512)
         self.dropout = nn.Dropout(DROPOUT_RATE)
         self.fc2 = nn.Linear(512, num_classes)
         
     def forward(self, x):
+        # Проверяем размерность входных данных
+        batch_size = x.size(0)
+        
         # Сверточные слои с активацией и пулингом
         x = self.pool(F.relu(self.bn1(self.conv1(x))))
         x = self.pool(F.relu(self.bn2(self.conv2(x))))
         x = self.pool(F.relu(self.bn3(self.conv3(x))))
         
         # Выравнивание для полносвязных слоев
-        x = x.view(-1, 128 * 16 * 16)
+        x = x.view(batch_size, -1)  # Используем batch_size вместо -1
+        
+        # Проверяем размерность перед полносвязным слоем
+        if x.size(1) != self.fc_input_size:
+            raise RuntimeError(f"Размерность после сверточных слоев ({x.size(1)}) не соответствует ожидаемой ({self.fc_input_size})")
         
         # Полносвязные слои
         x = F.relu(self.fc1(x))
@@ -300,7 +351,7 @@ class SoundClassifier:
             exit(1)
 
     def load_data(self):
-        def load_from_dir(dir_path):
+        def load_from_dir(dir_path, augment=False):
             if not os.path.exists(dir_path):
                 raise FileNotFoundError(f"Директория {dir_path} не найдена")
                 
@@ -336,11 +387,11 @@ class SoundClassifier:
                             audio, sr = librosa.load(file_path, sr=None, mono=True)
                             if sr != TARGET_SAMPLE_RATE:
                                 audio = librosa.resample(audio, orig_sr=sr, target_sr=TARGET_SAMPLE_RATE)
-                            
-                            # Создание спектрограммы
+                                
+                            # Создание спектрограммы для оригинального аудио
                             mel_spec = librosa.feature.melspectrogram(
-                                y=audio,
-                                sr=TARGET_SAMPLE_RATE,
+                                    y=audio,
+                                    sr=TARGET_SAMPLE_RATE,
                                 n_fft=N_FFT,
                                 hop_length=HOP_LENGTH,
                                 n_mels=N_MELS
@@ -374,6 +425,49 @@ class SoundClassifier:
                             X.append(mel_spec_db)
                             y.append(label)
                             
+                            # Аугментация данных для тренировочного набора
+                            if augment:
+                                # Создаем 3 аугментированных версии каждого файла
+                                for _ in range(3):
+                                    # Применяем случайную аугментацию
+                                    augmented_audio = augment_audio(audio, TARGET_SAMPLE_RATE)
+                                    
+                                    # Создаем спектрограмму для аугментированного аудио
+                                    aug_mel_spec = librosa.feature.melspectrogram(
+                                        y=augmented_audio,
+                                        sr=TARGET_SAMPLE_RATE,
+                                        n_fft=N_FFT,
+                                        hop_length=HOP_LENGTH,
+                                        n_mels=N_MELS
+                                    )
+                                    
+                                    # Преобразование в децибелы
+                                    aug_mel_spec_db = librosa.power_to_db(aug_mel_spec, ref=np.max)
+                                    
+                                    # Замена NaN и inf на 0
+                                    aug_mel_spec_db = np.nan_to_num(aug_mel_spec_db, nan=0.0, posinf=0.0, neginf=0.0)
+                                    
+                                    # Нормализация
+                                    min_val = np.min(aug_mel_spec_db)
+                                    max_val = np.max(aug_mel_spec_db)
+                                    if max_val > min_val:
+                                        aug_mel_spec_db = (aug_mel_spec_db - min_val) / (max_val - min_val)
+                                    else:
+                                        aug_mel_spec_db = np.zeros_like(aug_mel_spec_db)
+                                    
+                                    # Изменение размера
+                                    aug_mel_spec_db = cv2.resize(aug_mel_spec_db, SPECTROGRAM_SIZE)
+                                    
+                                    # Проверка на NaN
+                                    if np.isnan(aug_mel_spec_db).any():
+                                        continue
+                                    
+                                    # Добавление размерности канала
+                                    aug_mel_spec_db = np.expand_dims(aug_mel_spec_db, axis=0)
+                                    
+                                    X.append(aug_mel_spec_db)
+                                    y.append(label)
+                            
                             if file_count % 10 == 0:
                                 elapsed = time.time() - start_time
                                 print(f"Обработано {file_count} файлов ({elapsed:.1f} сек)")
@@ -401,15 +495,19 @@ class SoundClassifier:
                     raise FileNotFoundError(f"Директория {path} не существует")
 
             print("\nЗагрузка тренировочных данных...")
-            self.X, self.y = load_from_dir(self.data_dir)
+            self.X, self.y = load_from_dir(self.data_dir, augment=True)  # Аугментация только для тренировочных данных
+            print(f"Метки классов: {np.unique(self.y)}")
             self.y_encoded = self.le.fit_transform(self.y)
+            print(f"Закодированные метки: {np.unique(self.y_encoded)}")
             
             print("\nЗагрузка валидационных данных...")
-            self.X_valid, self.y_valid = load_from_dir(self.valid_dir)
+            self.X_valid, self.y_valid = load_from_dir(self.valid_dir, augment=False)
+            print(f"Валидационные метки: {np.unique(self.y_valid)}")
             self.y_encoded_valid = self.le.transform(self.y_valid)
+            print(f"Закодированные валидационные метки: {np.unique(self.y_encoded_valid)}")
             
             print("\nЗагрузка тестовых данных...")
-            self.X_test, self.y_test = load_from_dir(self.test_dir)
+            self.X_test, self.y_test = load_from_dir(self.test_dir, augment=False)
             self.y_encoded_test = self.le.transform(self.y_test)
             
             # Проверка на NaN в загруженных данных
@@ -429,6 +527,16 @@ class SoundClassifier:
             self._print_dataset_stats("Тренировочные", self.y)
             self._print_dataset_stats("Валидационные", self.y_valid)
             self._print_dataset_stats("Тестовые", self.y_test)
+            
+            # Проверяем размерности данных
+            print(f"\nРазмерность тренировочных данных: {self.X.shape}")
+            print(f"Размерность валидационных данных: {self.X_valid.shape}")
+            print(f"Размерность тестовых данных: {self.X_test.shape}")
+            
+            # Проверяем метки классов
+            print(f"\nУникальные метки в тренировочных данных: {np.unique(self.y_encoded)}")
+            print(f"Уникальные метки в валидационных данных: {np.unique(self.y_encoded_valid)}")
+            print(f"Количество классов: {len(self.le.classes_)}")
             
         except KeyboardInterrupt:
             print("\nПолное прерывание загрузки данных")
@@ -451,7 +559,14 @@ class SoundClassifier:
         """Создание сверточной нейронной сети"""
         # Создаем модель
         num_classes = len(self.le.classes_)
+        print(f"\nСоздание модели с {num_classes} классами")
+        print(f"Метки классов: {self.le.classes_}")
+        
         self.model = CNN(num_classes)
+        
+        # Выводим информацию о модели
+        print("\nАрхитектура модели:")
+        print(self.model)
         
         # Инициализация весов
         for m in self.model.modules():
@@ -465,15 +580,28 @@ class SoundClassifier:
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
 
-    def train(self, num_epochs=5):  # Уменьшаем до 5 эпох
+    def train(self, num_epochs=5):
         # Устанавливаем размер батча
         batch_size = 8  # Уменьшаем размер батча
+        
+        # Проверяем размерности данных
+        print(f"\nРазмерность тренировочных данных: {self.X.shape}")
+        print(f"Размерность валидационных данных: {self.X_valid.shape}")
+        
+        # Проверяем метки классов
+        print(f"\nУникальные метки в тренировочных данных: {np.unique(self.y_encoded)}")
+        print(f"Уникальные метки в валидационных данных: {np.unique(self.y_encoded_valid)}")
+        print(f"Количество классов: {len(self.le.classes_)}")
         
         # Создаем DataLoader для тренировочных данных
         train_dataset = torch.utils.data.TensorDataset(
             torch.tensor(self.X, dtype=torch.float32),
             torch.tensor(self.y_encoded, dtype=torch.long)
         )
+        print(f"\nРазмер тренировочного датасета: {len(train_dataset)}")
+        print(f"Размерность X в датасете: {train_dataset.tensors[0].shape}")
+        print(f"Размерность y в датасете: {train_dataset.tensors[1].shape}")
+        
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
@@ -486,12 +614,54 @@ class SoundClassifier:
             torch.tensor(self.X_valid, dtype=torch.float32),
             torch.tensor(self.y_encoded_valid, dtype=torch.long)
         )
+        print(f"\nРазмер валидационного датасета: {len(valid_dataset)}")
+        print(f"Размерность X в валидационном датасете: {valid_dataset.tensors[0].shape}")
+        print(f"Размерность y в валидационном датасете: {valid_dataset.tensors[1].shape}")
+        
         valid_loader = torch.utils.data.DataLoader(
             valid_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=0
         )
+        
+        # Проверяем первый батч
+        print("\nПроверка первого батча:")
+        for batch_idx, (data, target) in enumerate(train_loader):
+            print(f"\nБатч {batch_idx + 1}:")
+            print(f"Размерность данных: {data.shape}")
+            print(f"Размерность меток: {target.shape}")
+            print(f"Уникальные метки в батче: {torch.unique(target)}")
+            
+            # Проверяем размерность после каждого слоя
+            with torch.no_grad():
+                x = self.model.conv1(data)
+                x = self.model.pool(F.relu(self.model.bn1(x)))
+                print(f"После conv1 + pool: {x.shape}")
+                
+                x = self.model.conv2(x)
+                x = self.model.pool(F.relu(self.model.bn2(x)))
+                print(f"После conv2 + pool: {x.shape}")
+                
+                x = self.model.conv3(x)
+                x = self.model.pool(F.relu(self.model.bn3(x)))
+                print(f"После conv3 + pool: {x.shape}")
+                
+                x = x.view(batch_size, -1)
+                print(f"После view: {x.shape}")
+                
+                x = self.model.fc1(x)
+                print(f"После fc1: {x.shape}")
+                
+                x = self.model.fc2(x)
+                print(f"После fc2: {x.shape}")
+                
+                # Проверяем размерность выходных данных
+                if x.shape[1] != len(self.le.classes_):
+                    raise RuntimeError(f"Неверное количество выходных классов. Ожидается {len(self.le.classes_)}, получено {x.shape[1]}")
+            
+            # Проверяем только первый батч
+            break
         
         train_losses = []
         valid_losses = []
@@ -517,6 +687,15 @@ class SoundClassifier:
                 for batch_idx, (data, target) in enumerate(train_loader):
                     self.optimizer.zero_grad()
                     
+                    # Проверяем размерности батча
+                    if data.shape[1] != 1:  # Проверяем количество каналов
+                        print(f"Ошибка: Неверное количество каналов в батче. Ожидается 1, получено {data.shape[1]}")
+                        continue
+                        
+                    if data.shape[2] != SPECTROGRAM_SIZE[0] or data.shape[3] != SPECTROGRAM_SIZE[1]:
+                        print(f"Ошибка: Неверный размер спектрограммы. Ожидается {SPECTROGRAM_SIZE}, получено {data.shape[2:]}")
+                        continue
+                    
                     # Очищаем кэш каждые 5 батчей
                     if batch_idx % 5 == 0 and torch.cuda.is_available():
                         torch.cuda.empty_cache()
@@ -528,17 +707,17 @@ class SoundClassifier:
                     
                     outputs = self.model(data)
                     
+                    # Проверяем размерность выходных данных
+                    if outputs.shape[1] != len(self.le.classes_):
+                        print(f"Ошибка: Неверное количество выходных классов. Ожидается {len(self.le.classes_)}, получено {outputs.shape[1]}")
+                        continue
+                    
                     # Проверяем на NaN после forward pass
                     if torch.isnan(outputs).any():
                         print(f"Обнаружены NaN в выходных данных на батче {batch_idx}")
                         continue
                     
                     loss = self.criterion(outputs, target)
-                    
-                    # Проверяем на NaN в loss
-                    if torch.isnan(loss):
-                        print(f"Обнаружены NaN в loss на батче {batch_idx}")
-                        continue
                     
                     loss.backward()
                     
@@ -567,7 +746,7 @@ class SoundClassifier:
                 
                 train_losses.append(avg_train_loss)
                 train_accuracies.append(train_accuracy)
-                
+            
                 # Валидация
                 self.model.eval()
                 epoch_valid_loss = 0
@@ -576,12 +755,27 @@ class SoundClassifier:
                 
                 with torch.no_grad():
                     for data, target in valid_loader:
+                        # Проверяем размерности валидационного батча
+                        if data.shape[1] != 1:
+                            print(f"Ошибка: Неверное количество каналов в валидационном батче. Ожидается 1, получено {data.shape[1]}")
+                            continue
+                            
+                        if data.shape[2] != SPECTROGRAM_SIZE[0] or data.shape[3] != SPECTROGRAM_SIZE[1]:
+                            print(f"Ошибка: Неверный размер спектрограммы в валидационном батче. Ожидается {SPECTROGRAM_SIZE}, получено {data.shape[2:]}")
+                            continue
+                        
                         # Проверяем на NaN в валидационных данных
                         if torch.isnan(data).any():
                             print("Обнаружены NaN в валидационных данных")
                             continue
                         
                         outputs = self.model(data)
+                        
+                        # Проверяем размерность выходных данных
+                        if outputs.shape[1] != len(self.le.classes_):
+                            print(f"Ошибка: Неверное количество выходных классов в валидации. Ожидается {len(self.le.classes_)}, получено {outputs.shape[1]}")
+                            continue
+                        
                         loss = self.criterion(outputs, target)
                         
                         epoch_valid_loss += loss.item()
@@ -604,9 +798,9 @@ class SoundClassifier:
                 
                 valid_losses.append(avg_valid_loss)
                 valid_accuracies.append(valid_accuracy)
-                
+            
                 learning_rates.append(self.optimizer.param_groups[0]['lr'])
-                
+            
                 print(f"Эпоха [{epoch+1}/{num_epochs}] | "
                     f"Потеря: {avg_train_loss:.4f} | Валидация: {avg_valid_loss:.4f} | "
                     f"Точность: {train_accuracy:.2f}% | Валидационная точность: {valid_accuracy:.2f}%")
@@ -614,12 +808,18 @@ class SoundClassifier:
                 # Очищаем память после каждой эпохи
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-        
+
         except KeyboardInterrupt:
             print("\nОбучение прервано пользователем")
             self.running = False
         
         finally:
+            # Проверяем, что у нас есть данные для анализа
+            if not train_accuracies or not valid_accuracies:
+                print("\n⚠️ Обучение было прервано до завершения первой эпохи")
+                print("Нет данных для анализа")
+                return
+                
             self.analyze_training(
                 train_losses, 
                 valid_losses,
@@ -633,14 +833,32 @@ class SoundClassifier:
         print("Детальный анализ обучения:")
         print("="*60)
     
-    # Анализ точности
-        max_train_acc = max(train_accuracies)
-        min_train_acc = min(train_accuracies)
-        final_train_acc = train_accuracies[-1]
-    
-        max_valid_acc = max(valid_accuracies)
-        min_valid_acc = min(valid_accuracies)
-        final_valid_acc = valid_accuracies[-1]
+        # Проверяем, что списки не пустые
+        if not train_accuracies or not valid_accuracies:
+            print("⚠️ Ошибка: Нет данных для анализа (пустые списки точности)")
+            return
+            
+        # Проверяем, что все списки имеют одинаковую длину
+        if not all(len(lst) == len(train_accuracies) for lst in [valid_accuracies, train_losses, valid_losses, learning_rates]):
+            print("⚠️ Ошибка: Несоответствие длин списков данных")
+            return
+            
+        # Анализ точности
+        try:
+            max_train_acc = max(train_accuracies)
+            min_train_acc = min(train_accuracies)
+            final_train_acc = train_accuracies[-1]
+        except ValueError:
+            print("⚠️ Ошибка: Нет данных о тренировочной точности")
+            return
+            
+        try:
+            max_valid_acc = max(valid_accuracies)
+            min_valid_acc = min(valid_accuracies)
+            final_valid_acc = valid_accuracies[-1]
+        except ValueError:
+            print("⚠️ Ошибка: Нет данных о валидационной точности")
+            return
     
         print(f"\nТренировочная точность:")
         print(f"  Начальная: {train_accuracies[0]:.2f}%")
@@ -654,14 +872,14 @@ class SoundClassifier:
         print(f"  Минимальная: {min_valid_acc:.2f}% (эпоха {valid_accuracies.index(min_valid_acc)+1})")
         print(f"  Финальная: {final_valid_acc:.2f}%")
     
-    # График точности
+        # График точности
         print("\nДинамика точности:")
         for epoch, (train_acc, valid_acc) in enumerate(zip(train_accuracies, valid_accuracies)):
             diff = valid_acc - train_acc
             status = "↑↑" if diff > 5 else "↑↓" if diff < -5 else "≈"
             print(f"Эпоха {epoch+1:2d}: Train {train_acc:6.2f}% | Valid {valid_acc:6.2f}% | Разница {diff:+5.2f}% {status}")
     
-    # Рекомендации
+        # Рекомендации
         print("\nРекомендации:")
         if final_valid_acc < 60:
             print("  ▸ Низкая точность! Попробуйте:")
