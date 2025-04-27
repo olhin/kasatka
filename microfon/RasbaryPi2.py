@@ -16,6 +16,7 @@ import argparse
 import cv2
 import torch.nn.functional as F
 import random
+from localization import DroneLocalizer, calculate_tdoa  # Исправленный импорт локализатора
 
 # Функции аугментации данных
 def add_noise(audio, noise_level=0.005):
@@ -214,7 +215,10 @@ class SoundClassifier:
         self.audio_buffers = {port: np.array([], dtype=np.float32) for port in PORTS}
         self.last_predictions = {}
         self.sample_rates = {}
-        self.sockets = {}  # Для хранения сокетов
+        self.sockets = {}
+        
+        # Инициализация локализатора
+        self.localizer = DroneLocalizer()
         
         # Добавляем таймер для отслеживания времени последнего обнаружения
         self.last_detection_time = 0
@@ -228,24 +232,23 @@ class SoundClassifier:
         print(f"Инициализация в режиме: {OPERATING_MODE}")
         
         if OPERATING_MODE == "drone":
-            if not self.load_model():  # Попытка загрузки модели
-                self.init_training()    # Запуск обучения если модель не найдена
-        else:  # Режим хлопка
-            # Проверяем, доступен ли TensorFlow
+            if not self.load_model():
+                self.init_training()
+        else:
             if not TENSORFLOW_AVAILABLE:
                 print("Критическая ошибка: TensorFlow не установлен, но выбран режим хлопка!")
                 print("Пожалуйста, установите TensorFlow: pip install tensorflow")
                 print("Или запустите install_dependencies.bat")
                 print("Переключение на стандартный режим дрона...")
                 OPERATING_MODE = "drone"
-                if not self.load_model():  # Попытка загрузки модели
-                    self.init_training()   # Запуск обучения если модель не найдена
+                if not self.load_model():
+                    self.init_training()
             elif not self.load_tflite_model():
                 print("Критическая ошибка: не удалось загрузить TensorFlow модель для режима хлопка!")
                 print("Переключение на стандартный режим дрона...")
                 OPERATING_MODE = "drone"
-                if not self.load_model():  # Попытка загрузки модели
-                    self.init_training()   # Запуск обучения если модель не найдена
+                if not self.load_model():
+                    self.init_training()
             
         self.init_network()
 
@@ -342,7 +345,7 @@ class SoundClassifier:
         try:
             self.load_data()
             self.create_model()
-            self.train(num_epochs=5)  # Уменьшаем количество эпох до 5
+            self.train(num_epochs=10)  # Увеличиваем количество эпох до 10
             self.save_model()
             print("\nОбучение успешно завершено!\n")
             self.load_model()
@@ -1208,7 +1211,8 @@ class SoundClassifier:
                     self.last_predictions[port] = predictions[port]
                 
                 # Определяем текущий активный сектор
-                current_sector = self.determine_sector()
+                localization_result = self.determine_sector()
+                current_sector = localization_result["sector"]
                 
                 # Отправляем информацию через WebSocket при необходимости
                 current_time = time.time()
@@ -1218,6 +1222,8 @@ class SoundClassifier:
                     last_websocket_update = current_time
                     data_to_send = {
                         "sector": current_sector,
+                        "coordinates": localization_result["coordinates"],
+                        "error": localization_result["error"],
                         "timestamp": current_time
                     }
                     
@@ -1258,10 +1264,15 @@ class SoundClassifier:
                     else:
                         print(f"{f'Микрофон {i}':<12} {port:<8} {'⚠️ Нет данных':<20} {'':<12} {'':<15} {0:<15}")
                 
-                # Выводим информацию о секторе
+                # Выводим информацию о секторе и координатах
                 sector_color = "\033[95m" if current_sector in ["СВЕРХУ-СПРАВА", "СНИЗУ", "СВЕРХУ-СЛЕВА"] else \
                              "\033[91m" if current_sector == "ОШИБКА РАСПОЗНОВАНИЯ" else "\033[92m"
-                print(f"\n{sector_color}Определен сектор: {current_sector}{reset}")
+                
+                if localization_result["coordinates"]:
+                    coords = localization_result["coordinates"]
+                    print(f"\n{sector_color}Определен сектор: {current_sector} | Координаты: x={coords['x']:.2f} м, y={coords['y']:.2f} м{reset}")
+                else:
+                    print(f"\n{sector_color}Определен сектор: {current_sector}{reset}")
                 
                 time.sleep(0.1)
                 
@@ -1275,18 +1286,28 @@ class SoundClassifier:
         """Определение сектора обнаружения на основе уровней сигнала с разных микрофонов"""
         # Словарь соответствия портов микрофонам
         MICROPHONE_MAP = {
-            5000: "Микрофон 1",
-            5001: "Микрофон 2",
-            5002: "Микрофон 3",
-            5003: "Микрофон 4"
+            5000: "M1",  # Центральный микрофон
+            5001: "M2",  # Верхний микрофон
+            5002: "M3",  # Левый нижний микрофон
+            5003: "M4"   # Правый нижний микрофон
         }
         
         # Получаем последние предсказания
         predictions = self.last_predictions
+        print(f"Текущие предсказания: {predictions}")  # Отладочная информация
+        
+        # Обновляем предсказания в локализаторе
+        self.localizer.update_predictions(predictions)
         
         # Проверяем наличие всех необходимых устройств
         if not all(port in predictions for port in PORTS):
-            return "Не хватает данных с микрофонов"
+            missing_ports = [port for port in PORTS if port not in predictions]
+            print(f"Отсутствуют данные с портов: {missing_ports}")  # Отладочная информация
+            return {
+                "sector": "Не хватает данных с микрофонов",
+                "coordinates": None,
+                "error": "Недостаточно данных"
+            }
         
         # Собираем информацию о распознанных дронах
         detected_mics = []
@@ -1300,37 +1321,93 @@ class SoundClassifier:
         
         # Если не обнаружено ни одного дрона
         if not detected_mics:
-            return "Фоновый шум"
+            return {
+                "sector": "Фоновый шум",
+                "coordinates": None,
+                "error": None
+            }
         
-        # Если обнаружены все микрофоны
+        # Вычисляем TDOA для каждой пары микрофонов
+        tdoas = {}
+        for port in detected_mics:
+            if port != 5000:  # Пропускаем центральный микрофон
+                mic_name = MICROPHONE_MAP[port]
+                # Вычисляем TDOA относительно центрального микрофона
+                tdoa = calculate_tdoa(
+                    self.audio_buffers[5000],
+                    self.audio_buffers[port],
+                    TARGET_SAMPLE_RATE
+                )
+                tdoas[mic_name] = tdoa
+        
+        try:
+            # Определяем координаты дрона
+            drone_pos = self.localizer.localize(tdoas)
+            
+            # Определяем сектор
+            sector = self.localizer.get_sector(drone_pos)
+            
+            # Формируем результат
+            result = {
+                "sector": sector,
+                "coordinates": {
+                    "x": float(drone_pos[0]),
+                    "y": float(drone_pos[1])
+                },
+                "error": None
+            }
+            
+            return result
+            
+        except ValueError as e:
+            print(f"Ошибка локализации: {str(e)}")
+            return {
+                "sector": "ОШИБКА РАСПОЗНОВАНИЯ",
+                "coordinates": None,
+                "error": str(e)
+            }
+        
+        # Если локализация не удалась, используем старый метод определения сектора
         if len(detected_mics) == 4:
-            # Находим микрофон с минимальным уровнем звука
             min_level_port = min(sound_levels, key=sound_levels.get)
-            # Удаляем его из списка
             detected_mics.remove(min_level_port)
             print(f"Исключен микрофон {MICROPHONE_MAP[min_level_port]} с уровнем {sound_levels[min_level_port]:.1f} дБ")
         
-        # Если не обнаружен микрофон 1
         if 5000 not in detected_mics:
-            return "ОШИБКА РАСПОЗНОВАНИЯ"
+            return {
+                "sector": "ОШИБКА РАСПОЗНОВАНИЯ",
+                "coordinates": None,
+                "error": "Не обнаружен центральный микрофон"
+            }
         
-        # Определяем сектор на основе комбинации микрофонов
         detected_mics_set = set(detected_mics)
         
-        # СВЕРХУ-СПРАВА: микрофоны 1,2,3
         if detected_mics_set == {5000, 5001, 5002}:
-            return "СВЕРХУ-СПРАВА"
+            return {
+                "sector": "СВЕРХУ-СПРАВА",
+                "coordinates": None,
+                "error": "Используется приближенное определение сектора"
+            }
         
-        # СНИЗУ: микрофоны 1,3,4
         if detected_mics_set == {5000, 5002, 5003}:
-            return "СНИЗУ"
+            return {
+                "sector": "СНИЗУ",
+                "coordinates": None,
+                "error": "Используется приближенное определение сектора"
+            }
         
-        # СВЕРХУ-СЛЕВА: микрофоны 1,2,4
         if detected_mics_set == {5000, 5001, 5003}:
-            return "СВЕРХУ-СЛЕВА"
+            return {
+                "sector": "СВЕРХУ-СЛЕВА",
+                "coordinates": None,
+                "error": "Используется приближенное определение сектора"
+            }
         
-        # Если комбинация не соответствует ни одному из известных секторов
-        return "ОШИБКА РАСПОЗНОВАНИЯ"
+        return {
+            "sector": "ОШИБКА РАСПОЗНОВАНИЯ",
+            "coordinates": None,
+            "error": "Неизвестная комбинация микрофонов"
+        }
 
 # Обработка аргументов командной строки
 def parse_arguments():
